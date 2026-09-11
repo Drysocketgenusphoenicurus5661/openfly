@@ -190,7 +190,7 @@ cells with an 8 mV adaptation step decaying over 200 ms), 1.8 ms delay,
 2.2 ms refractory. Lazy active list: a neuron is skipped only while its
 voltage and both its instantaneous and asymptotic drive are below
 threshold, which is exact, not an approximation. Verified on this machine:
-numba 0.67 on uv-managed Python 3.11 with numpy 2.4.6.
+numba 0.67 on uv-managed Python 3.12 with numpy 2.4.6.
 
 Circuits exposed as named populations with stable indices: R1-R6
 photoreceptors (3,335 with inferred eye coordinates), R8p and R8y (811),
@@ -370,7 +370,7 @@ the git commit.
 
 ## 11. FastAPI backend
 
-Python 3.11 through uv. Pydantic settings from `.env` (never committed).
+Python 3.12 through uv. Pydantic settings from `.env` (never committed).
 
 | Route | Purpose |
 | --- | --- |
@@ -472,7 +472,7 @@ pushes also happen at checkpoints inside a phase.
 
 - Strategy: current-week NIFTY short straddle, NRML, intraday, combined
   stop loss, flat by 15:15, lot 65.
-- Kernel: numba, not C++. Python 3.11 via uv.
+- Kernel: numba, not C++. Python 3.12 via uv.
 - Paper mode is the OpenAlgo analyzer, verified on every start.
 - Frontend mirrors OpenAlgo's frontend stack.
 - MIT license. Plain text documents, no icons, no em dashes.

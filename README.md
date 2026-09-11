@@ -50,7 +50,7 @@ fixed-time straddle with its combined stop is what runs, in paper mode.
 
 ## Stack
 
-Backend: Python 3.11 via uv, numba, numpy, pandas, pyarrow, FastAPI,
+Backend: Python 3.12 via uv, numba, numpy, pandas, pyarrow, FastAPI,
 SQLite, the openalgo SDK. Frontend: Vite, React, TypeScript, Tailwind v4,
 shadcn, lightweight-charts. Data: MaleCNS v1.0 (CC-BY 4.0; HHMI Janelia
 FlyEM, University of Cambridge, MRC LMB, Google Research).
