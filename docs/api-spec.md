@@ -140,7 +140,7 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
               "max_entries_per_day": 10, "reentry_cooldown_minutes": 5, "vix_ceiling": 20, "min_days_to_expiry": 0},
  "risk": {"daily_loss_limit_pct": 1.0, "risk_budget_pct": 1.0, "max_lots": 3, "spread_pct_max": 0.5, "quote_max_age_s": 5,
           "index_move_veto_pct": 0.3},
- "neural": {"neural_ms": 200, "encoder": "B", "readout": "reservoir", "plastic": false},
+ "neural": {"neural_ms": 200, "live_interval": "5m", "replay_interval": "1m", "encoder": "B", "readout": "reservoir", "plastic": false},
  "costs": {"brokerage_per_order": 20, "brokerage_pct": 0.03, "stt_sell_pct": 0.1, "exchange_pct": 0.03503, "sebi_pct": 0.0001,
            "stamp_buy_pct": 0.003, "gst_pct": 18},
  "openalgo": {"host": "http://127.0.0.1:5000", "ws_url": "ws://127.0.0.1:8765", "api_key_set": true}}
@@ -202,7 +202,7 @@ for which index bars exist.
 
 Body: `{"date": "2026-09-11", "encoder": "B", "readout": "reservoir", "neural_ms": 200, "lots": 1,
 "stop_pct": 25, "target_pct": 40, "experiment_id": null}`. Runs the fly over
-that day's 5 minute bars with the replay broker and the synthetic or recorded
+that day's 1 minute bars (375 steps) with the replay broker and the synthetic or recorded
 straddle prices. Returns `{"id": "rp_20260911_..."}`; progress arrives as
 `replay.progress` events.
 

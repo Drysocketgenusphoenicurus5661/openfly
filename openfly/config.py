@@ -137,6 +137,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "neural": {
         "neural_ms": 200.0,
+        "live_interval": "5m",
+        "replay_interval": "1m",
         "bar_interval": "5m",
         "encoder": "B",
         "readout": "reservoir",
