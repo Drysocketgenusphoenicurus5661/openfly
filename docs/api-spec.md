@@ -137,7 +137,7 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
 {"strategy": {"underlying": "NIFTY", "lot_size": 65, "lots": 1, "product": "NRML",
               "leg_stop_pct": 30, "leg_stop_mode": "broker", "on_leg_stop": "hold_other",
               "combined_stop_enabled": true, "stop_pct": 25, "target_pct": 40, "lock_after_pct": 15, "trade_start": "09:20", "last_entry": "14:30", "square_off": "15:15",
-              "max_entries_per_day": 2, "vix_ceiling": 20, "min_days_to_expiry": 0},
+              "max_entries_per_day": 10, "reentry_cooldown_minutes": 5, "vix_ceiling": 20, "min_days_to_expiry": 0},
  "risk": {"daily_loss_limit_pct": 1.0, "risk_budget_pct": 1.0, "max_lots": 3, "spread_pct_max": 0.5, "quote_max_age_s": 5,
           "index_move_veto_pct": 0.3},
  "neural": {"neural_ms": 200, "encoder": "B", "readout": "reservoir", "plastic": false},
@@ -225,3 +225,13 @@ executes, `on_leg_stop` decides whether the other leg keeps running with its
 own fixed stop (`hold_other`, default) or is exited too (`exit_both`). The
 combined stop, target and lock remain available as software rules on the
 summed premium (`combined_stop_enabled`).
+
+## Dynamic straddles
+
+OpenFly trades straddles dynamically: after any exit (stop, target, readout
+EXIT) it may enter a fresh straddle at the then-current ATM strike as soon
+as the readout says calm again and the guard allows, subject to
+`reentry_cooldown_minutes` (default 5, one observation) and
+`max_entries_per_day` (default 10, 0 means unlimited). Only one straddle is
+open at a time: entry, then exit, then the next entry. Each straddle is a
+separate round trip in the ledger with its own stops.

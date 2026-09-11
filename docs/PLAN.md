@@ -53,8 +53,16 @@ straddle), N lots each, entered as one basket. ATM is the strike nearest
 the synthetic forward (call price minus put price plus strike), not the
 spot index, because the two differ by tens of points.
 
-Exits, all mechanical and all on the combined premium (call LTP plus put
-LTP):
+Exits, all mechanical:
+
+- Per-leg fixed stop loss (primary): right after entry, one BUY SL-M order
+  per leg is placed at the broker at that leg's selling price x (1 + 30
+  percent), tagged with the strategy, and kept in place until the leg is
+  closed (re-placed if it goes missing, cancelled before any other exit).
+  Never trailed. When one leg is stopped, the other keeps running with its
+  own fixed stop (configurable to exit both).
+
+The following rules act on the combined premium (call LTP plus put LTP):
 
 - Combined stop loss: exit both legs when the combined premium rises to
   entry credit x (1 + stop percent). Default 25 percent.
@@ -66,8 +74,11 @@ LTP):
 - Re-centering: if the index moves more than one strike step from the
   straddle strike, the straddle may be closed and reopened at the new ATM
   (configurable, default off in early versions).
-- Re-entry after a stop: at most once per day, and only if the fly's
-  readout says the regime is calm.
+- Dynamic re-entry: after any exit the engine may sell a fresh straddle at
+  the then-current ATM strike as soon as the readout says calm again and
+  the guard allows, after a cooldown of one observation (5 minutes). Several
+  straddles a day are possible, strictly one at a time: entry, exit, then
+  the next entry. A configurable cap (default 10 entries a day) bounds it.
 
 Entry: within the trade window (09:20 to 15:15; last new entry 14:30 by default, configurable) when the fly's
 readout predicts that realized movement over the next holding window will
@@ -271,6 +282,17 @@ for losses), and the readout is the reservoir readout restricted to MBON
 populations so the learned quantity and the decision share a pathway.
 Always run against a frozen twin.
 
+Reward function (plastic arm only). Decided one hour after each
+observation: r = clip(1 - realized move over the next 60 minutes / implied
+move from the straddle premium, -1, +1) minus the round-trip cost fraction,
+minus the trailing 20 day mean of r (an advantage baseline so plain decay
+days score zero). A positive r drives a PAM11 pulse of 20 x r mV for 200
+ms, a negative r a PPL101 pulse of 20 x |r| mV. When a straddle was
+actually open, the trade's realized P&L divided by its stop distance
+replaces the counterfactual for the entry observation. Rewards never come
+from tick-to-tick equity changes. The supervised readout uses the unclipped
+realized-over-implied ratio as its target and net P&L for model selection.
+
 Success criterion: on the untouched test window, the readout's realized
 versus implied classification must beat 52 percent accuracy with a
 block-bootstrap p-value below 0.05, and the straddle P&L after measured
@@ -317,8 +339,8 @@ API notes and gotchas are in `openalgo-notes.md`. Decisions:
   brokerage plus exchange charges. One formula for backtests, the paper
   ledger and the expected-cost check.
 - Operational rules (guard, reject-only): combined stop and target as in
-  Section 2, daily loss limit 1 percent of capital, at most two straddle
-  entries a day, no entries before 09:20 or after the last-entry time,
+  Section 2, daily loss limit 1 percent of capital, at most ten straddle
+  entries a day (one at a time), no entries before 09:20 or after the last-entry time,
   spread on either leg above 0.5 percent of premium vetoes, quote older
   than 5 seconds vetoes, index moved more than 0.3 percent since the
   observation vetoes, VIX above a configurable ceiling vetoes, kill switch
