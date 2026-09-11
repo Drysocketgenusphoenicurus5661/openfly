@@ -123,6 +123,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "min_days_to_expiry": 0,
         "recenter": False,
         "strike_step": 50,
+        "chain_strikes_each_side": 12,
+        "chain_record_interval": "1m",
     },
     "risk": {
         "capital": 1000000.0,
