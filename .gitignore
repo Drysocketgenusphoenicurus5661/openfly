@@ -1,0 +1,40 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Data and runs (large, local, or private)
+data/
+runs/
+*.feather
+*.parquet
+*.npz
+*.npy
+*.arrow
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+frontend/dist/
+.vite/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
