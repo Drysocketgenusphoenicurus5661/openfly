@@ -110,8 +110,10 @@ Start body: `{"mode": "paper" | "live", "lots": 1, "run_dir": null}`. Paper requ
 
 ```json
 {"in_position": true, "expiry": "2026-09-15", "strike": 23450, "lots": 1,
- "legs": [{"symbol": "NIFTY15SEP2623450CE", "side": "SELL", "qty": 65, "entry_price": 101.2, "ltp": 95.0},
-          {"symbol": "NIFTY15SEP2623450PE", "side": "SELL", "qty": 65, "entry_price": 98.4, "ltp": 90.1}],
+ "legs": [{"symbol": "NIFTY15SEP2623450CE", "side": "SELL", "qty": 65, "entry_price": 101.2, "ltp": 95.0,
+           "stop_price": 131.6, "stop_order_id": "2509...", "stop_status": "pending", "status": "open"},
+          {"symbol": "NIFTY15SEP2623450PE", "side": "SELL", "qty": 65, "entry_price": 98.4, "ltp": 90.1,
+           "stop_price": 127.9, "stop_order_id": "2509...", "stop_status": "pending", "status": "open"}],
  "entry_credit": 199.6, "combined_ltp": 185.1, "stop_level": 249.5, "target_level": 119.8,
  "pnl": 942.5, "entered_at": "2026-09-15T10:05:04+05:30", "square_off_at": "2026-09-15T15:15:00+05:30"}
 ```
@@ -132,8 +134,9 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
 ## GET /api/settings and PUT /api/settings
 
 ```json
-{"strategy": {"underlying": "NIFTY", "lot_size": 65, "lots": 1, "product": "NRML", "stop_pct": 25, "target_pct": 40,
-              "lock_after_pct": 15, "trade_start": "09:20", "last_entry": "14:30", "square_off": "15:15",
+{"strategy": {"underlying": "NIFTY", "lot_size": 65, "lots": 1, "product": "NRML",
+              "leg_stop_pct": 30, "leg_stop_mode": "broker", "on_leg_stop": "hold_other",
+              "combined_stop_enabled": true, "stop_pct": 25, "target_pct": 40, "lock_after_pct": 15, "trade_start": "09:20", "last_entry": "14:30", "square_off": "15:15",
               "max_entries_per_day": 2, "vix_ceiling": 20, "min_days_to_expiry": 0},
  "risk": {"daily_loss_limit_pct": 1.0, "risk_budget_pct": 1.0, "max_lots": 3, "spread_pct_max": 0.5, "quote_max_age_s": 5,
           "index_move_veto_pct": 0.3},
@@ -183,8 +186,10 @@ Every step carries `narrative`, a plain-language account for traders of what
 OpenFly saw, concluded and did, and `technical`, the numbers behind it. The
 backend writes both; the frontend shows them side by side.
 
-`action` is one of `ENTER`, `EXIT`, `STOP`, `TARGET`, `LOCK`, `SQUARE_OFF`,
-`REENTRY`, `HOLD`, `VETO`, `NONE`. The frontend Replay page plays steps
+`action` is one of `ENTER`, `EXIT`, `STOP`, `STOP_LEG`, `TARGET`, `LOCK`, `SQUARE_OFF`,
+`REENTRY`, `HOLD`, `VETO`, `NONE`. `STOP` is the combined stop; `STOP_LEG` is a
+per-leg fixed stop order executing at the broker (the other leg keeps its own
+fixed stop unless `on_leg_stop` is `exit_both`). The frontend Replay page plays steps
 back with a scrubber and speed control and renders the decision panel for
 the selected step.
 
@@ -206,3 +211,17 @@ straddle prices. Returns `{"id": "rp_20260911_..."}`; progress arrives as
 List: `{"replays": [{"id": "...", "date": "...", "state": "done", "config": {...}, "summary": {"pnl": 1234.5, "trades": 2}}]}`.
 One replay: `{"id", "date", "config", "state", "summary", "steps": [...]}`.
 `GET /api/replay/{id}/stimulus/{i}.png` returns the stimulus image for step i.
+
+## Per-leg fixed stop losses
+
+Right after a straddle entry fills, OpenFly places one BUY SL-M order per
+leg at `entry_price x (1 + leg_stop_pct / 100)` (default 30 percent), tagged
+with the strategy, and keeps them in place ("maintains" them): if a stop
+order is cancelled or rejected it is re-placed; when the position is exited
+for any other reason the stop orders are cancelled first. The stops are
+fixed, never trailed. `leg_stop_mode` `broker` places real SL-M orders;
+`software` monitors the leg price in the worker instead. When one leg's stop
+executes, `on_leg_stop` decides whether the other leg keeps running with its
+own fixed stop (`hold_other`, default) or is exited too (`exit_both`). The
+combined stop, target and lock remain available as software rules on the
+summed premium (`combined_stop_enabled`).
