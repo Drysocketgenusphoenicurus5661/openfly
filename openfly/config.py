@@ -58,6 +58,11 @@ class Paths:
         return self.data / "features"
 
     @property
+    def market_db(self) -> Path:
+        """DuckDB file holding every bar ever fetched from the broker (bars, coverage, chains)."""
+        return self.data / "market.duckdb"
+
+    @property
     def db(self) -> Path:
         return self.data / "openfly.db"
 
@@ -82,8 +87,10 @@ PATHS = Paths(root=_ROOT, data=_dir("OPENFLY_DATA", _ROOT / "data"), runs=_dir("
 
 
 def history_path(exchange: str, symbol: str, interval: str, paths: Paths = PATHS) -> Path:
-    """Canonical parquet location for cached bars.
+    """Parquet location used only for importing and exporting bars.
 
+    The live store is DuckDB at PATHS.market_db; parquet files under data/history are
+    imported into it on first open and can be exported for sharing.
     Columns: timestamp (tz-aware Asia/Kolkata), open, high, low, close, volume, oi.
     """
     return paths.history / exchange / symbol / f"{interval}.parquet"
