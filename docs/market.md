@@ -151,8 +151,12 @@ cal.in_trade_window(when=None), cal.can_enter(when=None)
 
 ```python
 resolver = ChainResolver(client, store=None, calendar=None)
-resolver.expiries() -> list[date]
-resolver.current_week(min_days_to_expiry=0, today=None) -> date
+resolver.expiries() -> list[date]                                 # full list from the expiry endpoint
+resolver.select_expiry(settings=None, min_days_to_expiry=None, today=None) -> date   # what the strategy trades now
+resolver.current_month(min_days_to_expiry=0, today=None) -> date  # last expiry of the calendar month; next month after it
+resolver.current_week(min_days_to_expiry=0, today=None) -> date   # nearest expiry on or after today
+resolver.expiry_for_date(trading_date, selection=None, min_days_to_expiry=0) -> date   # for replays of past days
+resolver.is_monthly(expiry) -> bool; monthly_expiries(expiries) -> list[date]
 resolver.contracts(expiry) -> {strike: ChainRow(strike, ce: Contract, pe: Contract)}
 resolver.contract(expiry, strike, "CE") -> Contract; resolver.straddle_contracts(expiry, strike)
 resolver.symbol_for(expiry, strike, "CE") -> str          # no network
@@ -166,6 +170,25 @@ resolver.greeks(symbol) -> dict
 ATM is the strike-step multiple nearest the synthetic forward (strike + CE -
 PE at the listed strike nearest the index), not the spot index.
 
+Expiry selection follows `settings.strategy.expiry_selection`:
+
+- `monthly` (default): the monthly expiry of a calendar month is the last
+  expiry date in that month from the expiry endpoint (29-SEP-26, 27-OCT-26,
+  23-NOV-26). On and before that date the current month is traded (0 DTE
+  allowed with `min_days_to_expiry` 0); after it, or when fewer trading days
+  than `min_days_to_expiry` remain, the next month's last expiry.
+- `weekly`: the nearest expiry on or after today with enough trading days left.
+
+`expiry_for_date(trading_date, selection)` serves replays. When the live list
+covers the date (the date is not before the list was fetched) the list is
+used. For earlier dates the expiry is derived by rule: monthly is the last
+Tuesday of the month for months from September 2025 and the last Thursday
+before that; weekly is the next such weekday on or after the date. A derived
+date that is a holiday in the cached holiday list (or a weekend) shifts back
+to the previous trading day. The 23-NOV-26 monthly (a Monday, because
+24-NOV-26 is a holiday) is an example the rule reproduces only when the
+holiday list for 2026 is cached.
+
 ## `CostModel` (costs.py)
 
 ```python
@@ -176,36 +199,49 @@ model.straddle_round_trip(call_entry, put_entry, call_exit, put_exit, lots, lot_
 model.round_trip_per_lot_points(entry_credit_points, lot_size=65) -> float
 ```
 
-One lot of a 204 point straddle round trip costs about INR 119 (brokerage
-80, STT 13.26, exchange 9.29, SEBI 0.03, stamp 0.40, GST 16.07).
+The reference is a discount broker's options brokerage calculator: buy 100,
+sell 100, quantity 400 costs INR 141.83 (brokerage 40, STT 60, exchange
+28.42, SEBI 0.08, stamp 1, GST 12.33), 0.35 points to breakeven;
+`model.calculator_round_trip(100, 100, 400)` reproduces it. One lot of a 204
+point straddle round trip costs about INR 125.44 (brokerage 80, STT 19.89,
+exchange 9.42, SEBI 0.03, stamp 0 after rounding to the rupee, GST 16.10).
+`openfly.experiments.costs` and `openfly.execution.costs` are thin wrappers
+over this model, so every package books the same rupees.
 
 ## `Recorder` (recorder.py)
 
 ```python
 recorder = Recorder(client)
 recorder.record(day=None, strikes_each_side=None, expiries=None, force=False, progress=print) -> RecordReport
-recorder.backfill(days=30, listing_lead_days=21, progress=print) -> list[RecordReport]
+recorder.backfill_plan(weekly_days=None, monthly_days=None, only_expiry=None) -> [(expiry, [days newest first])]
+recorder.backfill(weekly_days=None, monthly_days=None, only_expiry=None, progress=print) -> list[RecordReport]
 ```
 
 For a trading date the recorder stores NIFTY and INDIAVIX 1m bars, then for
-the current-week expiry (and the next week's on expiry day) every listed
-strike from `floor(min_close / 50) * 50 - 12 * 50` to
-`ceil(max_close / 50) * 50 + 12 * 50` (settings
-`strategy.chain_strikes_each_side`), both legs, 1m, into `chains` and
-`bars`, recording coverage so a re-run is a no-op. Days before a contract's
-listing are probed with one call and marked `empty`. A broker that declines
-history stops the run with `declined` set on the report.
+the weekly and the monthly expiry as of that date (plus the following one of
+that kind on an expiry day) every listed strike from
+`floor(min_close / 50) * 50 - 12 * 50` to `ceil(max_close / 50) * 50 + 12 * 50`
+(settings `strategy.chain_strikes_each_side`), both legs, 1m, into `chains`
+and `bars`, recording coverage so a re-run is a no-op.
+
+Backfill windows: weekly expiries for the last `strategy.weekly_backfill_days`
+(7) trading days; the current and next monthly expiries for up to
+`strategy.monthly_backfill_days` (90) trading days, newest first. An expiry
+stops at the first day whose probe strike (nearest the day's index) returns
+no bars, and a symbol that returns no bars on some date is not requested for
+older dates (coverage is recorded so re-runs skip them). A broker that
+declines history stops the run with `declined` set on the report.
 
 ## CLI
 
 ```
 openfly record [--date YYYY-MM-DD] [--strikes N] [--force]
-openfly backfill-chains [--days 30] [--lead 21]
+openfly backfill-chains [--expiry DD-MMM-YY] [--weekly-days 7] [--monthly-days 90]
 openfly history [--exchange E --symbol S --interval I --days N] [--no-fetch]
 openfly history import-parquet [--root DIR] [--force]
 openfly history export --exchange E --symbol S --interval I [--out FILE]
 openfly history status
-openfly chain [--expiry YYYY-MM-DD] [--strikes 5] [--iv]
+openfly chain [--expiry DD-MMM-YY] [--selection monthly|weekly] [--strikes 5] [--iv]   # prints the selection used
 openfly session [--date YYYY-MM-DD]
 openfly costs --credit 204 --lots 1
 ```

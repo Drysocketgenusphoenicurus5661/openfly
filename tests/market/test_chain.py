@@ -5,11 +5,19 @@ from datetime import date
 import pytest
 
 from openfly.interfaces import Contract, Quote, StraddleQuote
-from openfly.market.chain import ChainResolver, ChainSnapshot, nearest_strike
+from openfly.market.chain import ChainResolver, ChainSnapshot, monthly_expiries, nearest_strike
 from openfly.market.client import OpenAlgoError
 from openfly.market.session import SessionCalendar
 
-EXPIRIES = [date(2026, 9, 15), date(2026, 9, 22), date(2026, 9, 29), date(2026, 10, 6)]
+EXPIRIES = [
+    date(2026, 9, 15),
+    date(2026, 9, 22),
+    date(2026, 9, 29),
+    date(2026, 10, 6),
+    date(2026, 10, 13),
+    date(2026, 10, 27),
+    date(2026, 11, 23),
+]
 INDEX = 23398.1
 
 
@@ -134,6 +142,57 @@ def test_current_week_respects_min_days_to_expiry(resolver):
         resolver.current_week(99, today=date(2026, 9, 12))
 
 
+def test_current_month_is_last_expiry_of_the_month(resolver):
+    assert monthly_expiries(EXPIRIES) == [date(2026, 9, 29), date(2026, 10, 27), date(2026, 11, 23)]
+    assert resolver.current_month(0, today=date(2026, 9, 12)) == date(2026, 9, 29)
+    assert resolver.current_month(0, today=date(2026, 9, 29)) == date(2026, 9, 29)  # 0 DTE allowed
+    assert resolver.current_month(1, today=date(2026, 9, 29)) == date(2026, 10, 27)
+    assert resolver.current_month(0, today=date(2026, 9, 30)) == date(2026, 10, 27)
+    assert resolver.current_month(0, today=date(2026, 10, 28)) == date(2026, 11, 23)
+    assert resolver.is_monthly(date(2026, 9, 29)) and not resolver.is_monthly(date(2026, 9, 22))
+
+
+def test_select_expiry_dispatches_on_settings(resolver, settings):
+    assert resolver.expiry_selection == "monthly"
+    assert resolver.select_expiry(today=date(2026, 9, 12)) == date(2026, 9, 29)
+    settings["strategy"]["expiry_selection"] = "weekly"
+    assert resolver.select_expiry(settings, today=date(2026, 9, 12)) == date(2026, 9, 15)
+    settings["strategy"]["min_days_to_expiry"] = 1
+    assert resolver.select_expiry(settings, today=date(2026, 9, 15)) == date(2026, 9, 22)
+    settings["strategy"]["expiry_selection"] = "fortnightly"
+    with pytest.raises(ValueError):
+        resolver.select_expiry(settings)
+
+
+def test_expiry_for_date_uses_list_when_covered_and_rule_otherwise(resolver):
+    resolver.expiries()  # list fetched "today" (2026-09-12 fixture clock is real time; use rule range below)
+    # Past dates: rule. Last Tuesday of the month since September 2025, last Thursday before.
+    assert resolver.expiry_for_date(date(2026, 8, 3), "monthly") == date(2026, 8, 25)
+    assert resolver.expiry_for_date(date(2026, 8, 26), "monthly") == date(2026, 9, 29)  # rolled to next month
+    assert resolver.expiry_for_date(date(2025, 7, 10), "monthly") == date(2025, 7, 31)  # Thursday regime
+    assert resolver.expiry_for_date(date(2025, 9, 3), "monthly") == date(2025, 9, 30)  # first Tuesday regime month
+    assert resolver.expiry_for_date(date(2026, 8, 3), "weekly") == date(2026, 8, 4)
+    assert resolver.expiry_for_date(date(2026, 8, 4), "weekly") == date(2026, 8, 4)
+    assert resolver.expiry_for_date(date(2026, 8, 5), "weekly") == date(2026, 8, 11)
+    assert resolver.expiry_for_date(date(2025, 8, 1), "weekly") == date(2025, 8, 7)  # Thursday regime
+    # A future date inside the live list: the list wins (23-NOV-26 is a Monday, not derivable by rule).
+    assert resolver.expiry_for_date(date(2026, 11, 2), "monthly") == date(2026, 11, 23)
+    assert resolver.expiry_for_date(date(2026, 10, 7), "weekly") == date(2026, 10, 13)
+    with pytest.raises(ValueError):
+        resolver.expiry_for_date(date(2026, 8, 3), "daily")
+
+
+def test_rule_expiry_shifts_back_over_holidays(paths, settings):
+    from tests.market.test_session import StubCalendarClient
+
+    calendar = SessionCalendar(StubCalendarClient(), settings, paths)  # 2026-09-22 (Tuesday) is a holiday
+    resolver = ChainResolver(StubChainClient(), settings, calendar)
+    assert resolver.rule_weekly_expiry(date(2026, 9, 21)) == date(2026, 9, 21)
+    assert resolver.rule_weekly_expiry(date(2026, 9, 22)) == date(2026, 9, 29)
+    assert resolver.rule_monthly_expiry(2026, 9) == date(2026, 9, 29)
+    assert resolver.rule_monthly_expiry(2025, 6) == date(2025, 6, 26)  # Thursday regime
+
+
 def test_contracts_resolved_via_search_and_filtered(resolver):
     chain = resolver.contracts(date(2026, 9, 15))
     assert resolver.client.calls[-1] == "search:NIFTY15SEP26"
@@ -152,7 +211,7 @@ def test_contracts_resolved_via_search_and_filtered(resolver):
 
 
 def test_chain_snapshot_atm_by_synthetic_forward(resolver):
-    snapshot = resolver.chain_snapshot(index_ltp=INDEX, strikes_each_side=5, vix=12.29)
+    snapshot = resolver.chain_snapshot(expiry=date(2026, 9, 15), index_ltp=INDEX, strikes_each_side=5, vix=12.29)
     assert isinstance(snapshot, ChainSnapshot)
     assert snapshot.expiry == date(2026, 9, 15)
     assert [row.strike for row in snapshot.rows] == [23150.0 + 50 * k for k in range(11)]
@@ -179,6 +238,11 @@ def test_chain_snapshot_fetches_index_and_vix_when_missing(resolver):
     assert snapshot.index_ltp == INDEX and snapshot.vix == 12.29
     assert len(snapshot.rows) == 5
     assert resolver.client.calls.count("multiquotes") == 1
+
+
+def test_chain_snapshot_defaults_to_the_selected_expiry(resolver):
+    snapshot = resolver.chain_snapshot(index_ltp=INDEX, vix=12.0, strikes_each_side=1)
+    assert snapshot.expiry == resolver.current_month(0)
 
 
 def test_chain_snapshot_with_iv_and_greeks(resolver):

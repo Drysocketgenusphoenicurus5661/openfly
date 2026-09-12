@@ -31,8 +31,14 @@ logger = logging.getLogger("openfly.market.session")
 
 DEFAULT_OPEN = time(9, 15)
 DEFAULT_CLOSE = time(15, 30)
-WEEKLY_EXPIRY_WEEKDAY = 1  # Tuesday
+# NSE moved NIFTY expiries from Thursday to Tuesday for contracts from September 2025.
+TUESDAY_EXPIRY_FROM = date(2025, 9, 1)
 CALENDAR_FILE = "calendar.json"
+
+
+def expiry_weekday(d: date) -> int:
+    """Weekday (Monday 0) on which NIFTY options expire around date ``d``: Tuesday since September 2025, Thursday before."""
+    return 1 if d >= TUESDAY_EXPIRY_FROM else 3
 
 
 def _parse_hhmm(text: str) -> time:
@@ -249,15 +255,20 @@ class SessionCalendar:
     def _fallback_expiry(self, d: date) -> bool:
         if not self.is_trading_day(d):
             return False
-        if d.weekday() == WEEKLY_EXPIRY_WEEKDAY:
+        weekday = expiry_weekday(d)
+        if d.weekday() == weekday:
             return True
-        # Tuesday holiday: the expiry moves to the previous trading day.
+        # Expiry weekday holiday: the expiry moves to the previous trading day.
         probe = d + timedelta(days=1)
-        while probe.weekday() != WEEKLY_EXPIRY_WEEKDAY:
+        while probe.weekday() != weekday:
             if self.is_trading_day(probe):
                 return False
             probe += timedelta(days=1)
         return not self.is_trading_day(probe)
+
+    def shift_to_trading_day(self, d: date) -> date:
+        """``d`` itself when it trades, else the previous trading day (holiday-shifted expiry)."""
+        return d if self.is_trading_day(d) else self.previous_trading_day(d)
 
     # windows -------------------------------------------------------------
 

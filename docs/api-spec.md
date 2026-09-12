@@ -12,7 +12,7 @@ a 4xx or 5xx status.
   "version": "0.1.0",
   "python": "3.11.16",
   "data": {"ready": true, "neurons": 166700, "edges": 25582938, "graph_path": "data/graph.npz"},
-  "openalgo": {"reachable": true, "host": "http://127.0.0.1:5000", "analyzer_mode": true, "broker": "zerodha"},
+  "openalgo": {"reachable": true, "host": "http://127.0.0.1:5000", "analyzer_mode": true, "broker": "the broker id OpenAlgo reports"},
   "worker": {"state": "stopped", "mode": null, "run_dir": null, "started_at": null, "last_event_at": null},
   "session": {"trading_date": "2026-09-15", "is_trading_day": true, "trade_start": "2026-09-15T09:20:00+05:30",
               "last_entry": "2026-09-15T14:30:00+05:30", "square_off": "2026-09-15T15:15:00+05:30",

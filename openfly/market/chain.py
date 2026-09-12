@@ -1,19 +1,36 @@
-"""Option chain resolution for the current-week NIFTY straddle.
+"""Option chain resolution for the NIFTY straddle.
 
 OpenAlgo's optionchain, optionsymbol and syntheticfuture helpers return 404 on
-this install, so the chain is built from ``expiry`` (weekly list) and ``search``
-(``NIFTY15SEP26`` returns every strike of that expiry). ATM is chosen from the
-synthetic forward (strike + call - put at the strike nearest the index), which
-differs from the spot index by tens of points.
+this install, so the chain is built from ``expiry`` (the full expiry list) and
+``search`` (``NIFTY15SEP26`` returns every strike of that expiry). ATM is
+chosen from the synthetic forward (strike + call - put at the strike nearest
+the index), which differs from the spot index by tens of points.
+
+Expiry selection (settings ``strategy.expiry_selection``):
+
+- ``monthly`` (default): the monthly expiry of a calendar month is the last
+  expiry date falling in that month (29-SEP-26, 27-OCT-26, 23-NOV-26). On and
+  before that date the current month is traded; after it, the next month's.
+- ``weekly``: the nearest expiry on or after today.
+
+``min_days_to_expiry`` counts trading days strictly after today up to and
+including the expiry, so 0 accepts an expiry-day (0 DTE) contract.
+
+For dates the live list does not cover (past trading days for replays)
+``expiry_for_date`` derives the expiry by rule: the last Tuesday of the month
+since September 2025 (last Thursday before), shifted back one trading day
+when it falls on a holiday from the cached holiday list; weekly is the next
+such weekday on or after the date, shifted the same way.
 """
 
 from __future__ import annotations
 
+import calendar as _calendar
 import logging
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from openfly.config import DEFAULT_SETTINGS, SettingsStore
@@ -26,11 +43,31 @@ from openfly.market.client import (
     expiry_code,
     option_symbol,
 )
-from openfly.market.session import SessionCalendar
+from openfly.market.session import SessionCalendar, expiry_weekday
 
 logger = logging.getLogger("openfly.market.chain")
 
 EXPIRY_TIME_IST = (15, 30)
+SELECTIONS = ("monthly", "weekly")
+
+
+def monthly_expiries(expiries: Iterable[date]) -> list[date]:
+    """The last expiry date of every calendar month present in ``expiries``, sorted."""
+    last: dict[tuple[int, int], date] = {}
+    for expiry in expiries:
+        key = (expiry.year, expiry.month)
+        if key not in last or expiry > last[key]:
+            last[key] = expiry
+    return sorted(last.values())
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    last_day = date(year, month, _calendar.monthrange(year, month)[1])
+    return last_day - timedelta(days=(last_day.weekday() - weekday) % 7)
+
+
+def _next_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 @dataclass(frozen=True)
@@ -131,12 +168,15 @@ class ChainResolver:
         else:
             settings = (store or SettingsStore()).get() if store is not None else DEFAULT_SETTINGS
         strategy = settings.get("strategy", {})
+        self.settings = settings
         self.underlying = strategy.get("underlying", "NIFTY")
         self.index_exchange = strategy.get("index_exchange", "NSE_INDEX")
         self.options_exchange = strategy.get("options_exchange", "NFO")
         self.vix_symbol = strategy.get("vix_symbol", "INDIAVIX")
         self.strike_step = float(strategy.get("strike_step", 50))
         self.lot_size = int(strategy.get("lot_size", 65))
+        self.expiry_selection = str(strategy.get("expiry_selection", "monthly")).lower()
+        self.min_days_to_expiry = int(strategy.get("min_days_to_expiry", 0))
         self.calendar = calendar
         self.expiry_ttl = expiry_ttl_seconds
         self._expiries: list[date] = []
@@ -185,15 +225,114 @@ class ChainResolver:
     def current_week(self, min_days_to_expiry: int = 0, today: date | None = None) -> date:
         """Nearest expiry with at least ``min_days_to_expiry`` trading days left (0 accepts today's expiry)."""
         start = today or datetime.now(IST).date()
-        for expiry in self.expiries():
+        return self._first_eligible(self.expiries(), start, min_days_to_expiry, "weekly")
+
+    def current_month(self, min_days_to_expiry: int = 0, today: date | None = None) -> date:
+        """The current month's expiry: the last expiry date of the calendar month.
+
+        On and before that date it is traded (0 DTE allowed when
+        ``min_days_to_expiry`` is 0); after it, or when fewer trading days than
+        required remain, the next month's last expiry is chosen.
+        """
+        start = today or datetime.now(IST).date()
+        return self._first_eligible(monthly_expiries(self.expiries()), start, min_days_to_expiry, "monthly")
+
+    def _first_eligible(self, candidates: Iterable[date], start: date, min_days: int, label: str) -> date:
+        for expiry in sorted(candidates):
             if expiry < start:
                 continue
-            if self.trading_days_to(expiry, start) >= int(min_days_to_expiry):
+            if self.trading_days_to(expiry, start) >= int(min_days):
                 return expiry
         raise OpenAlgoError(
-            f"no {self.underlying} expiry with at least {min_days_to_expiry} trading days left",
+            f"no {self.underlying} {label} expiry with at least {min_days} trading days left",
             endpoint="expiry",
         )
+
+    def is_monthly(self, expiry: date) -> bool:
+        return expiry in set(monthly_expiries(self.expiries()))
+
+    def select_expiry(
+        self,
+        settings: dict[str, Any] | None = None,
+        min_days_to_expiry: int | None = None,
+        today: date | None = None,
+    ) -> date:
+        """The expiry the strategy trades now, per ``strategy.expiry_selection`` (monthly or weekly)."""
+        strategy = (settings or self.settings).get("strategy", {})
+        selection = str(strategy.get("expiry_selection", self.expiry_selection)).lower()
+        min_days = int(strategy.get("min_days_to_expiry", self.min_days_to_expiry)) if min_days_to_expiry is None else int(min_days_to_expiry)
+        if selection not in SELECTIONS:
+            raise ValueError(f"expiry_selection must be one of {SELECTIONS}, got {selection!r}")
+        if selection == "monthly":
+            return self.current_month(min_days, today)
+        return self.current_week(min_days, today)
+
+    # rule-based expiries for past dates -----------------------------------
+
+    def _shift(self, d: date) -> date:
+        if self.calendar is not None:
+            return self.calendar.shift_to_trading_day(d)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+        return d
+
+    def rule_monthly_expiry(self, year: int, month: int) -> date:
+        """Last Tuesday (Thursday before September 2025) of the month, shifted back over holidays."""
+        return self._shift(_last_weekday_of_month(year, month, expiry_weekday(date(year, month, 1))))
+
+    def rule_weekly_expiry(self, trading_date: date) -> date:
+        """Next expiry weekday on or after ``trading_date``, shifted back over holidays."""
+        weekday = expiry_weekday(trading_date)
+        candidate = trading_date + timedelta(days=(weekday - trading_date.weekday()) % 7)
+        expiry = self._shift(candidate)
+        if expiry < trading_date:
+            expiry = self._shift(candidate + timedelta(days=7))
+        return expiry
+
+    def _known_expiries(self) -> list[date]:
+        try:
+            return self.expiries()
+        except OpenAlgoError:
+            return self.calendar.expiries() if self.calendar is not None else []
+
+    def expiry_for_date(self, trading_date: date, selection: str | None = None, min_days_to_expiry: int = 0) -> date:
+        """Expiry traded on ``trading_date`` under ``selection``; for replays of past days.
+
+        The live list is used when it covers the date (its earliest expiry lies
+        at or after the date, so nothing between has expired unseen); otherwise
+        the rule described in the module docstring applies. ``min_days_to_expiry``
+        rolls forward when fewer trading days than required remain.
+        """
+        selection = (selection or self.expiry_selection).lower()
+        if selection not in SELECTIONS:
+            raise ValueError(f"selection must be one of {SELECTIONS}, got {selection!r}")
+        known = self._known_expiries()
+        min_days = int(min_days_to_expiry)
+        candidates: list[date] = []
+        if known and min(known) <= trading_date <= max(known) and trading_date >= self._list_reliable_from(known):
+            candidates = monthly_expiries(known) if selection == "monthly" else list(known)
+        if not candidates:
+            if selection == "monthly":
+                year, month = trading_date.year, trading_date.month
+                expiry = self.rule_monthly_expiry(year, month)
+                candidates = [expiry]
+                for _ in range(3):
+                    year, month = _next_month(year, month)
+                    candidates.append(self.rule_monthly_expiry(year, month))
+            else:
+                expiry = self.rule_weekly_expiry(trading_date)
+                candidates = [expiry]
+                for k in range(1, 4):
+                    candidates.append(self.rule_weekly_expiry(expiry + timedelta(days=7 * k - 6)))
+        return self._first_eligible(candidates, trading_date, min_days, selection)
+
+    def _list_reliable_from(self, known: list[date]) -> date:
+        """Dates from which the live list is complete: the day after the last expiry that could have dropped off."""
+        fetched = datetime.fromtimestamp(self._expiries_at, IST).date() if self._expiries_at else datetime.now(IST).date()
+        earliest = min(known)
+        # Anything expiring before the fetch date is gone from the list, so the list is
+        # complete only from the fetch date (or from the earliest expiry if fetched later).
+        return min(fetched, earliest)
 
     # contracts -----------------------------------------------------------
 
@@ -274,9 +413,10 @@ class ChainResolver:
 
         One ``multiquotes`` call covers every leg. The forward is computed at the
         listed strike nearest the index; ATM is the strike-step multiple nearest
-        the forward. ``with_iv`` adds one ``optiongreeks`` call per leg.
+        the forward. ``with_iv`` adds one ``optiongreeks`` call per leg. With no
+        ``expiry`` the strategy's selection (monthly or weekly) decides.
         """
-        expiry = expiry or self.current_week(min_days_to_expiry)
+        expiry = expiry or self.select_expiry(min_days_to_expiry=min_days_to_expiry)
         if index_ltp is None or vix is None:
             wanted = []
             if index_ltp is None:

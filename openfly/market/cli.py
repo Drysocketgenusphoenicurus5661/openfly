@@ -1,12 +1,12 @@
 """Market subcommands for the ``openfly`` CLI.
 
     openfly record [--date YYYY-MM-DD] [--strikes N] [--force]
-    openfly backfill-chains [--days 30] [--lead 21]
+    openfly backfill-chains [--expiry DD-MMM-YY] [--weekly-days 7] [--monthly-days 90]
     openfly history [--exchange NSE_INDEX --symbol NIFTY --interval 1m --days 5] [--no-fetch]
     openfly history import-parquet [--root DIR] [--force]
     openfly history export --exchange E --symbol S --interval I [--out FILE]
     openfly history status
-    openfly chain [--expiry YYYY-MM-DD] [--strikes 5] [--iv]
+    openfly chain [--expiry DD-MMM-YY] [--selection monthly|weekly] [--strikes 5] [--iv]
     openfly session [--date YYYY-MM-DD]
     openfly costs --credit 204 --lots 1
 """
@@ -22,7 +22,7 @@ from typing import Any
 
 from openfly.config import PATHS, SettingsStore
 from openfly.market.chain import ChainResolver
-from openfly.market.client import IST, OpenAlgoClient, OpenAlgoError
+from openfly.market.client import IST, OpenAlgoClient, OpenAlgoError, parse_expiry
 from openfly.market.costs import CostModel
 from openfly.market.history import HistoryCache
 from openfly.market.recorder import Recorder
@@ -80,10 +80,17 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     if client is None:
         return 1
     recorder = Recorder(client, store=store)
-    reports = recorder.backfill(days=args.days, listing_lead_days=args.lead, progress=_say, strikes_each_side=args.strikes)
+    only = parse_expiry(args.expiry) if args.expiry else None
+    reports = recorder.backfill(
+        weekly_days=args.weekly_days,
+        monthly_days=args.monthly_days,
+        only_expiry=only,
+        progress=_say,
+        strikes_each_side=args.strikes,
+    )
     fetched = sum(r.rows for r in reports)
     symbols = sum(r.symbols for r in reports)
-    _say(f"backfill finished: {len(reports)} day-expiry pairs, {symbols} symbol-days fetched, {fetched} rows")
+    _say(f"backfill finished: {len(reports)} expiry-days visited, {symbols} symbol-days fetched, {fetched} rows")
     _say("chain coverage:")
     _print_table(
         recorder.bars.chain_coverage(),
@@ -146,8 +153,14 @@ def cmd_chain(args: argparse.Namespace) -> int:
         return 1
     calendar = SessionCalendar(client, store)
     resolver = ChainResolver(client, store, calendar)
+    selection = (args.selection or resolver.expiry_selection).lower()
     try:
-        expiry = date.fromisoformat(args.expiry) if args.expiry else None
+        if args.expiry:
+            expiry = parse_expiry(args.expiry)
+            _say(f"expiry selection: explicit {expiry}")
+        else:
+            expiry = resolver.select_expiry({"strategy": {**store.get()["strategy"], "expiry_selection": selection}})
+            _say(f"expiry selection: {selection} (settings.strategy.expiry_selection is {resolver.expiry_selection}) -> {expiry}")
         snapshot = resolver.chain_snapshot(expiry, strikes_each_side=args.strikes, with_iv=args.iv)
     except OpenAlgoError as exc:
         _say(f"chain unavailable: {exc}")
@@ -233,9 +246,13 @@ def register_cli(subparsers: Any) -> None:
     record.add_argument("--force", action="store_true", help="refetch even when covered")
     record.set_defaults(handler=cmd_record)
 
-    backfill = subparsers.add_parser("backfill-chains", help="record every listed expiry for the last N days")
-    backfill.add_argument("--days", type=int, default=30)
-    backfill.add_argument("--lead", type=int, default=21, help="calendar days before expiry a weekly contract lists")
+    backfill = subparsers.add_parser(
+        "backfill-chains",
+        help="record weekly expiries for the last few trading days and the current and next monthly expiries as far back as the broker returns",
+    )
+    backfill.add_argument("--expiry", default=None, help="only this expiry, DD-MMM-YY")
+    backfill.add_argument("--weekly-days", type=int, default=None, help="trading days for weekly expiries (settings: 7)")
+    backfill.add_argument("--monthly-days", type=int, default=None, help="trading days for monthly expiries (settings: 90)")
     backfill.add_argument("--strikes", type=int, default=None)
     backfill.set_defaults(handler=cmd_backfill)
 
@@ -260,8 +277,9 @@ def register_cli(subparsers: Any) -> None:
     exp.add_argument("--out", default=None)
     hsub.add_parser("status", help="list stored series, coverage and recorded chain days")
 
-    chain = subparsers.add_parser("chain", help="current-week chain with synthetic forward and ATM")
-    chain.add_argument("--expiry", default=None)
+    chain = subparsers.add_parser("chain", help="chain of the selected expiry with synthetic forward and ATM")
+    chain.add_argument("--expiry", default=None, help="explicit expiry, DD-MMM-YY or YYYY-MM-DD")
+    chain.add_argument("--selection", choices=["monthly", "weekly"], default=None, help="override settings.strategy.expiry_selection")
     chain.add_argument("--strikes", type=int, default=5)
     chain.add_argument("--iv", action="store_true", help="add implied volatility per leg (one call per leg)")
     chain.set_defaults(handler=cmd_chain)

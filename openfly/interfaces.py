@@ -176,7 +176,7 @@ class MarketObservation:
     position_lots: int  # negative for short straddle, 0 when flat
 
 
-class Decision(str, Enum):
+class Decision(str, Enum):  # noqa: UP042 (str() of a member must stay the qualified name)
     ENTER = "ENTER"
     EXIT = "EXIT"
     HOLD = "HOLD"
@@ -215,7 +215,7 @@ class ReadoutProtocol(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class Side(str, Enum):
+class Side(str, Enum):  # noqa: UP042
     BUY = "BUY"
     SELL = "SELL"
 
@@ -240,7 +240,7 @@ class Intent:
     observation_hash: str | None = None
 
 
-class IntentStatus(str, Enum):
+class IntentStatus(str, Enum):  # noqa: UP042
     PREPARED = "PREPARED"
     UNKNOWN = "UNKNOWN"
     ACCEPTED = "ACCEPTED"

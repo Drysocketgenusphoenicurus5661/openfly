@@ -230,8 +230,9 @@ something (STOP, TARGET, LOCK, SQUARE_OFF, STOP_LEG, fills). Tick steps carry
   `round_trip_inr(model, credit_points, lots, lot_size)` adapt any cost model
   with the openfly.market.costs.CostModel signature (results may be floats or
   objects with `.total`).
-- `SimpleCostModel.from_settings(settings)`: the fallback with the documented
-  formula (INR 119.05 for one lot of a 204 point straddle round trip).
+- `SimpleCostModel` is an alias of `openfly.market.costs.CostModel` (one
+  formula everywhere: INR 125.44 for one lot of a 204 point straddle round
+  trip, INR 141.83 for the calculator's buy 100, sell 100, quantity 400).
 - `load_cost_model(settings)`: the market package's CostModel when
   importable, else the fallback.
 
