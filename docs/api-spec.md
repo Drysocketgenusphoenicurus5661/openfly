@@ -135,6 +135,8 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
 
 ```json
 {"strategy": {"underlying": "NIFTY", "lot_size": 65, "lots": 1, "product": "NRML",
+              "stop_mode": "adaptive", "stop_horizon_minutes": 60, "stop_buffer": 1.25,
+              "leg_stop_min_pct": 15, "leg_stop_max_pct": 80, "combined_stop_min_pct": 10, "combined_stop_max_pct": 50,
               "leg_stop_pct": 30, "leg_stop_mode": "broker", "on_leg_stop": "hold_other",
               "combined_stop_enabled": true, "stop_pct": 25, "target_pct": 40, "lock_after_pct": 15, "trade_start": "09:20", "last_entry": "14:30", "square_off": "15:15",
               "max_entries_per_day": 10, "reentry_cooldown_minutes": 5, "vix_ceiling": 20, "min_days_to_expiry": 0},
@@ -235,3 +237,26 @@ as the readout says calm again and the guard allows, subject to
 `max_entries_per_day` (default 10, 0 means unlimited). Only one straddle is
 open at a time: entry, then exit, then the next entry. Each straddle is a
 separate round trip in the ledger with its own stops.
+
+## Volatility-adaptive stops
+
+With `stop_mode` `adaptive` (default) the stop distances are computed at
+each entry and then held for that straddle:
+
+1. expected move m over `stop_horizon_minutes` = max(implied, realized),
+   where implied = combined premium x sqrt(horizon / minutes to expiry) and
+   realized = std of the last 60 one-minute log returns x sqrt(horizon) x index.
+2. per leg: premium rise for a move m against that leg = |delta| x m + 0.5 x
+   gamma x m squared (delta and gamma from the greeks endpoint or the
+   Black-Scholes pricer); leg stop percent = `stop_buffer` x rise / leg price,
+   clipped to [`leg_stop_min_pct`, `leg_stop_max_pct`].
+3. combined: rise = 0.5 x (gamma_ce + gamma_pe) x m squared + |net delta| x m;
+   combined stop percent = `stop_buffer` x rise / combined premium, clipped to
+   [`combined_stop_min_pct`, `combined_stop_max_pct`].
+
+The straddle payload gains `stop_basis`: `{"mode": "adaptive", "horizon_minutes": 60,
+"expected_move_points": 95.0, "implied_move_points": 88.0, "realized_move_points": 95.0,
+"leg_stop_pct": {"ce": 31.2, "pe": 28.7}, "combined_stop_pct": 18.4}` and every
+narrative states the expected move and the resulting stop levels. Each new
+straddle recomputes its stops from the then-current volatility. `stop_mode`
+`fixed` uses `leg_stop_pct` and `stop_pct` as before. Stops are never trailed.
