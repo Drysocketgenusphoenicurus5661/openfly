@@ -13,6 +13,7 @@ export function Transport({ times }: { times: string[] }) {
   const playing = useReplayPlayer((s) => s.playing)
   const speed = useReplayPlayer((s) => s.speed)
   const { toggle, next, prev, first, last, setIndex, setSpeed } = useReplayPlayer.getState()
+  const atEnd = total > 0 && index >= total - 1
 
   return (
     <div className="flex items-center gap-3">
@@ -36,11 +37,17 @@ export function Transport({ times }: { times: string[] }) {
           <SkipBack />
         </Button>
         <Button
-          variant="default"
+          variant={playing ? 'default' : 'outline'}
           size="icon-sm"
           onClick={toggle}
-          title={playing ? 'Pause' : 'Play'}
+          title={playing ? 'Pause' : atEnd ? 'Play again from the start' : 'Play'}
           disabled={total === 0}
+          aria-pressed={playing}
+          data-playing={playing || undefined}
+          className={cn(
+            playing &&
+              'bg-action-enter text-black ring-2 ring-action-enter/40 hover:bg-action-enter/90'
+          )}
         >
           {playing ? <Pause /> : <Play />}
         </Button>
@@ -80,6 +87,15 @@ export function Transport({ times }: { times: string[] }) {
           </button>
         ))}
       </div>
+      <span
+        className={cn(
+          'w-24 text-xs font-medium',
+          playing ? 'text-action-enter' : 'text-muted-foreground'
+        )}
+        data-testid="transport-state"
+      >
+        {total === 0 ? '' : playing ? `Playing ${speed}x` : atEnd ? 'Finished' : 'Paused'}
+      </span>
       <Slider
         className="flex-1"
         min={0}

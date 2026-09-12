@@ -87,6 +87,10 @@ export function DecisionPanel({
         <Cell label="Action" value={<ActionBadge action={step.action} className="text-[11px]" />} />
         <Cell label="Day P&L" value={<Pnl value={step.pnl_day} />} />
       </div>
+      <p className="text-[11px] text-muted-foreground" data-testid="prediction-legend">
+        Prediction is realized over implied: below 1 calm (sell premium), above 1 wild. The fixed
+        decoder reports 2.00 when it says wild and 0.00 when calm.
+      </p>
 
       <Tabs defaultValue={defaultTab}>
         <TabsList>

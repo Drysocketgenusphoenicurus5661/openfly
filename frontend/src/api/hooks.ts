@@ -230,6 +230,10 @@ export function useReplay(id: string | null) {
     queryFn: () => api.replay(id ?? ''),
     enabled: enabled && !!id,
     staleTime: 60_000,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state
+      return state && state !== 'done' && state !== 'failed' ? 2000 : false
+    },
   })
 }
 

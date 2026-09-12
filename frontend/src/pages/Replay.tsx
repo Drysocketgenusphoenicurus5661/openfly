@@ -38,7 +38,7 @@ import { levelsFromStraddle, markersFromSteps, premiumFromSteps } from '@/lib/ch
 import { fmtNum } from '@/lib/format'
 import { formatDate } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { useReplayPlayer } from '@/stores/replayPlayer'
+import { DEFAULT_SPEED, useReplayPlayer } from '@/stores/replayPlayer'
 
 // The step shape carries the index close, not OHLC, so candles for the
 // replay chart are built from consecutive closes.
@@ -214,7 +214,7 @@ export default function ReplayPage() {
   const { data: replay, isLoading } = useReplay(selectedId)
   const progress = useLastEvent<{ id: string; done: number; total: number }>('replay.progress')
   const index = useReplayPlayer((s) => s.index)
-  const load = useReplayPlayer((s) => s.load)
+  const loadAndPlay = useReplayPlayer((s) => s.loadAndPlay)
   const setIndex = useReplayPlayer((s) => s.setIndex)
 
   const select = (id: string | null) => {
@@ -234,9 +234,12 @@ export default function ReplayPage() {
   }, [list, selectedId])
 
   const steps = useMemo(() => (replay?.state === 'done' ? replay.steps : []), [replay])
+  const finishedId = replay?.state === 'done' ? replay.id : null
+  // A finished replay (picked from the list, the URL, or just run) starts
+  // playing from the first step at the default speed.
   useEffect(() => {
-    if (replay && steps.length) load(replay.id, steps.length, Math.min(60, steps.length - 1))
-  }, [replay, steps.length, load])
+    if (finishedId && steps.length) loadAndPlay(finishedId, steps.length, DEFAULT_SPEED)
+  }, [finishedId, steps.length, loadAndPlay])
 
   const bars = useMemo(() => barsFromSteps(steps), [steps])
   const numbering = useMemo(() => numberStraddles(steps), [steps])

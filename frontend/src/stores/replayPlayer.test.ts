@@ -25,6 +25,20 @@ describe('replay player store', () => {
     expect(useReplayPlayer.getState().index).toBe(0)
   })
 
+  it('loads and starts playing at 5x from the first step', () => {
+    useReplayPlayer.getState().loadAndPlay('rp_2', 375)
+    const s = useReplayPlayer.getState()
+    expect(s.replayId).toBe('rp_2')
+    expect(s.index).toBe(0)
+    expect(s.playing).toBe(true)
+    expect(s.speed).toBe(5)
+    s.tick()
+    expect(useReplayPlayer.getState().index).toBe(1)
+    // An empty replay cannot play.
+    useReplayPlayer.getState().loadAndPlay('rp_3', 0)
+    expect(useReplayPlayer.getState().playing).toBe(false)
+  })
+
   it('ticks while playing and pauses at the end', () => {
     const s = useReplayPlayer.getState()
     s.load('rp_1', 3)
@@ -53,6 +67,18 @@ describe('replay player store', () => {
     expect(stepIntervalMs(1)).toBe(1000)
     expect(stepIntervalMs(5)).toBe(200)
     expect(stepIntervalMs(20)).toBe(50)
+  })
+
+  it('advances several steps at once and pauses at the end', () => {
+    useReplayPlayer.getState().loadAndPlay('rp_4', 20)
+    useReplayPlayer.getState().advance(7)
+    expect(useReplayPlayer.getState().index).toBe(7)
+    expect(useReplayPlayer.getState().playing).toBe(true)
+    useReplayPlayer.getState().advance(100)
+    expect(useReplayPlayer.getState().index).toBe(19)
+    expect(useReplayPlayer.getState().playing).toBe(false)
+    useReplayPlayer.getState().advance(1)
+    expect(useReplayPlayer.getState().index).toBe(19)
   })
 
   it('does not play an empty replay', () => {

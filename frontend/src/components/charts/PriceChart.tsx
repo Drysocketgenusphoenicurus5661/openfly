@@ -1,17 +1,18 @@
 // Two titled panes on one time axis: NIFTY one minute candles with action
 // markers on top, the ATM straddle premium in points below with the
-// combined stop, target, credit and per-leg stop lines. In replay mode the
-// chart shows a prefix of the day through openalgo-charts' ReplayController.
+// combined stop, target, credit and per-leg stop lines. With a cursor
+// (replay) the whole day is drawn: fully coloured up to the cursor, dimmed
+// beyond it, and the visible range stays the full session.
 
 import {
   type Chart,
   createChart,
   PaneLegend,
   type PriceLine,
-  ReplayController,
   type SeriesApi,
   type SeriesMarker,
   type SeriesMarkers,
+  withAlpha,
 } from 'openalgo-charts'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Bar } from '@/api/types'
@@ -46,7 +47,8 @@ export interface PriceChartProps {
   premium?: PremiumPoint[]
   markers?: ChartMarker[]
   levels?: ChartLevel[]
-  // When set, only bars up to this index are shown (replay).
+  // Replay cursor: bars at or before this index are drawn in full colour,
+  // later ones dimmed. Undefined means live: everything in full colour.
   replayIndex?: number
   height?: number
   className?: string
@@ -63,7 +65,11 @@ interface ChartBar {
   low: number
   close: number
   volume?: number
+  color?: string
 }
+
+// Opacity of everything beyond the replay cursor.
+const DIM = 0.35
 
 function toChartBar(bar: Bar): ChartBar {
   return {
@@ -135,9 +141,9 @@ export function PriceChart({
   const premiumRef = useRef<SeriesApi | null>(null)
   const markersRef = useRef<SeriesMarkers | null>(null)
   const legendsRef = useRef<{ price: PaneLegend; premium: PaneLegend } | null>(null)
-  const replayRef = useRef<ReplayController | null>(null)
   const linesRef = useRef<Map<string, PriceLine>>(new Map())
   const pointRef = useRef<{ x: number; y: number } | null>(null)
+  const fittedRef = useRef<ChartBar[] | null>(null)
   const clickRef = useRef(onMarkerClick)
   clickRef.current = onMarkerClick
   const [hovered, setHovered] = useState<{ id: string; x: number; y: number } | null>(null)
@@ -153,6 +159,10 @@ export function PriceChart({
     for (const m of markers ?? []) map.set(m.id, m.text)
     return map
   }, [markers])
+  const cursorTime =
+    replayIndex !== undefined && chartBars.length
+      ? chartBars[Math.max(0, Math.min(replayIndex, chartBars.length - 1))].time
+      : Infinity
 
   // Create once: both panes, both series, both titles.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the chart is created once; later effects follow the props
@@ -207,10 +217,9 @@ export function PriceChart({
     })
     setReady(true)
     return () => {
-      replayRef.current?.stop()
-      replayRef.current = null
       linesRef.current.clear()
       legendsRef.current = null
+      fittedRef.current = null
       chart.destroy()
       chartRef.current = null
       candlesRef.current = null
@@ -230,37 +239,41 @@ export function PriceChart({
     legendsRef.current?.premium.setOptions({ title: premiumTitle })
   }, [priceTitle, premiumTitle])
 
-  // Data and replay.
+  // Data: the whole day, coloured up to the cursor and dimmed beyond it.
   useEffect(() => {
     const chart = chartRef.current
     const candles = candlesRef.current
     const premiumSeries = premiumRef.current
     if (!chart || !candles || !premiumSeries || !ready) return
+    const theme = chartTheme(dark)
+    const premiumColor = dark ? PREMIUM_COLOR.dark : PREMIUM_COLOR.light
+    const replay = replayIndex !== undefined
 
-    if (replayIndex !== undefined) {
-      if (!replayRef.current) {
-        candles.setData(chartBars)
-        premiumSeries.setData(premiumPoints)
-        if (chartBars.length === 0) return
-        replayRef.current = new ReplayController(chart, {
-          series: [candles, premiumSeries],
-          bars: chartBars,
-          startIndex: Math.min(replayIndex, chartBars.length - 1),
-        })
-        chart.timeScale.fitContent(chartBars.length)
-      } else {
-        replayRef.current.seek(Math.min(replayIndex, chartBars.length - 1))
+    candles.setData(
+      chartBars.map((b) =>
+        replay && b.time > cursorTime
+          ? { ...b, color: withAlpha(b.close >= b.open ? theme.upColor : theme.downColor, DIM) }
+          : b
+      )
+    )
+    premiumSeries.setData(
+      premiumPoints.map((p) =>
+        replay
+          ? { ...p, color: p.time > cursorTime ? withAlpha(premiumColor, DIM) : premiumColor }
+          : p
+      )
+    )
+
+    if (replay) {
+      // The visible range is the full session; refit only when the day changes.
+      if (fittedRef.current !== chartBars) {
+        chart.timeScale.fitContent(Math.max(chartBars.length, 1))
+        fittedRef.current = chartBars
       }
       return
     }
-
-    if (replayRef.current) {
-      replayRef.current.stop()
-      replayRef.current = null
-    }
-    const previous = candles.getData().length
-    candles.setData(chartBars)
-    premiumSeries.setData(premiumPoints)
+    // Live: keep the right edge in view as bars arrive.
+    const previous = fittedRef.current?.length ?? 0
     if (previous === 0 || Math.abs(chartBars.length - previous) > 5) {
       chart.timeScale.fitContent(Math.max(chartBars.length, 1))
     } else {
@@ -270,37 +283,30 @@ export function PriceChart({
         chart.setVisibleLogicalRange({ from: chartBars.length - span, to: chartBars.length + 2 })
       }
     }
-  }, [chartBars, premiumPoints, replayIndex, ready])
+    fittedRef.current = chartBars
+  }, [chartBars, premiumPoints, replayIndex, cursorTime, ready, dark])
 
-  // A new day means a new replay controller.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: chartBars is the trigger, not a value the cleanup reads
-  useEffect(() => {
-    return () => {
-      replayRef.current?.stop()
-      replayRef.current = null
-    }
-  }, [chartBars])
-
-  // Markers on the price pane.
+  // Markers on the price pane, dimmed beyond the cursor.
   useEffect(() => {
     const layer = markersRef.current
     if (!layer || !ready) return
-    const limit =
-      replayIndex !== undefined && chartBars[replayIndex] ? chartBars[replayIndex].time : Infinity
-    const list: SeriesMarker[] = (markers ?? [])
-      .filter((m) => m.time <= limit)
-      .map((m) => {
-        const shape = markerShape(m.action)
-        return {
-          id: m.id,
-          time: m.time,
-          color: actionHex(m.action, dark),
-          text: actionStyle(m.action).label,
-          ...shape,
-        }
-      })
+    const list: SeriesMarker[] = (markers ?? []).map((m) => {
+      const shape = markerShape(m.action)
+      const hex = actionHex(m.action, dark)
+      const future = m.time > cursorTime
+      // Labels only where they carry information: entries and exits that
+      // have happened. Vetoes and future markers stay as bare glyphs.
+      const labelled = !future && m.action !== 'VETO' && m.action !== 'HOLD' && m.action !== 'NONE'
+      return {
+        id: m.id,
+        time: m.time,
+        color: future ? withAlpha(hex, DIM) : hex,
+        ...(labelled ? { text: actionStyle(m.action).label } : {}),
+        ...shape,
+      }
+    })
     layer.setMarkers(list)
-  }, [markers, replayIndex, chartBars, dark, ready])
+  }, [markers, cursorTime, dark, ready])
 
   // Levels on the premium pane.
   useEffect(() => {
