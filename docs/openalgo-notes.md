@@ -128,14 +128,16 @@ holidays. OpenFly trades between 09:20 and 15:15 and squares off at 15:15.
 
 | Charge | Rate |
 | --- | --- |
-| Brokerage | min(0.03 percent, INR 20) per executed order (configurable) |
-| STT | 0.1 percent of premium on the sell side |
-| Exchange transaction | 0.03503 percent of premium turnover (NSE options) |
-| SEBI | 0.0001 percent |
-| Stamp duty | 0.003 percent of premium on the buy side |
-| GST | 18 percent on brokerage plus exchange charges |
+| Brokerage | flat INR 20 per executed order |
+| STT | 0.15 percent of the sell-side premium value |
+| Exchange transaction | 0.03553 percent of premium turnover (NSE options including IPFT) |
+| SEBI | 0.0001 percent of turnover |
+| Stamp duty | 0.003 percent of the buy-side premium value, rounded to the rupee |
+| GST | 18 percent on brokerage plus exchange plus SEBI |
 
-Measured: one lot of the 204 point straddle round trip costs about INR 119.
+Reference (discount broker calculator): buy 100, sell 100, quantity 400 gives
+a total of INR 141.83. One lot of the 204 point straddle round trip costs
+about INR 126.
 
 ## Gotchas list
 

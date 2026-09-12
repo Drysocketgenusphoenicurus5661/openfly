@@ -55,17 +55,24 @@ spot index, because the two differ by tens of points.
 
 Exits, all mechanical:
 
-- Per-leg fixed stop loss (primary): right after entry, one BUY SL-M order
-  per leg is placed at the broker at that leg's selling price x (1 + 30
-  percent), tagged with the strategy, and kept in place until the leg is
-  closed (re-placed if it goes missing, cancelled before any other exit).
-  Never trailed. When one leg is stopped, the other keeps running with its
-  own fixed stop (configurable to exit both).
+- Per-leg stop loss (primary): right after entry, one BUY SL-M order per
+  leg is placed at the broker, tagged with the strategy, and kept in place
+  until the leg is closed (re-placed if it goes missing, cancelled before
+  any other exit). The distance is volatility adaptive: the expected index
+  move over the next hour (the larger of the straddle's own implied move
+  for that horizon and the realized move of the last hour) is converted
+  into a premium rise per leg with delta and gamma, multiplied by a 1.25
+  buffer and clipped to 15 to 80 percent of the leg price. Once set, the
+  stop is held for that straddle and never trailed; each new straddle is
+  re-sized. A fixed-percentage mode exists for comparison. When one leg is
+  stopped, the other keeps running with its own stop (configurable to exit
+  both).
 
 The following rules act on the combined premium (call LTP plus put LTP):
 
 - Combined stop loss: exit both legs when the combined premium rises to
-  entry credit x (1 + stop percent). Default 25 percent.
+  entry credit x (1 + stop percent), where the percent is sized the same
+  adaptive way (clipped to 10 to 50 percent), or 25 percent in fixed mode.
 - Combined target: exit both legs when the combined premium falls to entry
   credit x (1 - target percent). Default 40 percent. Optional lock: after
   the premium has fallen 15 percent, move the stop to the entry credit.
@@ -114,7 +121,7 @@ Measured on Saturday 2026-09-12 through the local OpenAlgo server (Friday
 | Intraday profile | 09:15 to 09:30 std 0.163 percent, mid-day 0.023 to 0.028, 15:00 to 15:15 0.038 | Trading starts at 09:20 by rule, after the most violent minutes; mid-day is where a short straddle earns |
 | Gap and range | mean absolute gap 0.378 percent, daily range 0.89 percent | Overnight is not our problem (flat by 15:15) |
 | History coverage | NIFTY index 1m for 400 days (101,310 bars), INDIAVIX daily and 1m, option contracts only while listed (about two weeks before expiry) | Backtests need a synthetic straddle model plus a forward-collected real option dataset |
-| Costs per straddle round trip, 1 lot | about INR 120 (four orders at INR 20, STT 0.1 percent on sold premium, exchange 0.035 percent, GST) = 0.9 percent of credit | Costs are small relative to the stop |
+| Costs per straddle round trip, 1 lot | about INR 126 (four orders at INR 20, STT 0.15 percent on the sold premium, exchange 0.03553 percent, GST) = 0.95 percent of credit | Costs are small relative to the stop |
 | Account state | live mode, zero available cash | Paper mode through the OpenAlgo analyzer is the default and is verified at every start |
 
 ## 4. Design principles
@@ -333,11 +340,13 @@ API notes and gotchas are in `openalgo-notes.md`. Decisions:
 - Position truth: `positionbook` per leg (product NRML), read before every
   order and on every reconciliation; the ledger must agree or the worker
   halts.
-- Costs: brokerage min(0.03 percent, INR 20) per order, STT 0.1 percent on
-  sold premium, exchange 0.03503 percent of premium turnover, SEBI 0.0001
-  percent, stamp 0.003 percent on bought premium, GST 18 percent on
-  brokerage plus exchange charges. One formula for backtests, the paper
-  ledger and the expected-cost check.
+- Costs, from a discount broker's options calculator: flat INR 20 brokerage
+  per executed order, STT 0.15 percent of the sold premium value, exchange
+  0.03553 percent of premium turnover, SEBI 0.0001 percent, stamp 0.003
+  percent of the bought premium rounded to the rupee, GST 18 percent on
+  brokerage plus exchange plus SEBI (buy 100, sell 100, quantity 400 gives
+  INR 141.83). One formula for backtests, the paper ledger and the
+  expected-cost check.
 - Operational rules (guard, reject-only): combined stop and target as in
   Section 2, daily loss limit 1 percent of capital, at most ten straddle
   entries a day (one at a time), no entries before 09:20 or after the last-entry time,

@@ -99,17 +99,20 @@ from choosing days and hours, which is the question the fly is asked.
 | NIFTY15SEP2623400CE 1m and 5m | from 2026-09-02 (listed about two weeks before expiry) |
 | Expired contracts | not available from the broker; hence the recorder job and the synthetic straddle model |
 
-## Costs per straddle round trip (1 lot, short, discount broker assumptions)
+## Costs per straddle round trip (1 lot, short, discount broker calculator)
 
-| Charge | Amount |
-| --- | --- |
-| Brokerage, 4 orders at INR 20 | 80.0 |
-| STT, 0.1 percent of sold premium (13,260) | 13.3 |
-| Exchange transaction, 0.03503 percent of premium turnover both ways | 9.3 |
-| SEBI, 0.0001 percent | 0.03 |
-| Stamp, 0.003 percent of bought premium | 0.4 |
-| GST, 18 percent of brokerage plus exchange | 16.1 |
-| Total | about INR 119, 0.9 percent of the credit |
+Reference from a discount broker's NFO options brokerage calculator (verified
+2026-09-12): buy 100, sell 100, quantity 400 (turnover 80,000) gives
+brokerage 40 (flat INR 20 per executed order), STT 60 (0.15 percent of the
+sell-side premium value), exchange transaction charge 28.42 (0.03553 percent
+of turnover), GST 12.33 (18 percent of brokerage plus exchange plus SEBI),
+SEBI 0.08 (0.0001 percent of turnover), stamp duty 1 (0.003 percent of the
+buy value, rounded to the rupee), total 141.83, 0.35 points to breakeven.
+
+For one lot of the 204 point straddle sold and bought back at the same
+premium (sell value 13,260, turnover 26,520): brokerage 80, STT 19.89,
+exchange 9.42, SEBI 0.03, GST 16.10, stamp 0, total about INR 126, or 0.95
+percent of the credit.
 
 ## Endpoint notes from this session
 

@@ -6,7 +6,7 @@ A fruit fly's complete central nervous system, simulated from the public
 MaleCNS v1.0 connectome (166,700 neurons, 25.6 million connections), wired
 to the Indian options market through OpenAlgo. It runs one strategy:
 intraday short straddles on current-week NIFTY options, one at a time,
-with fixed stop losses on each leg, flat by 15:15 every day.
+with volatility-sized stop losses on each leg, flat by 15:15 every day.
 
 Status: under construction. The design is in [docs/PLAN.md](docs/PLAN.md).
 Paper trading through OpenAlgo's analyzer mode is the default; live mode is
@@ -44,13 +44,20 @@ lot, product NRML. That is a short straddle: it earns as time passes and
 the index stays near the strike, and it loses if the index runs far in
 either direction. The trade is protected three ways:
 
-- A fixed stop loss on each leg, placed at the broker as an SL-M order at
-  30 percent above that leg's selling price, never trailed. If one leg is
-  stopped out the other leg keeps running with its own fixed stop.
-- A combined stop and target on the two premiums added together: exit both
-  legs if the sum rises 25 percent above the credit received, or take
-  profit when it falls 40 percent; after a 15 percent fall the combined
-  stop moves to breakeven.
+- A stop loss on each leg, placed at the broker as an SL-M order the moment
+  the straddle is sold. Its distance is not a fixed percentage: at every
+  entry OpenFly works out how far NIFTY is expected to move in the next
+  hour (the larger of what the straddle itself is pricing for that hour and
+  what the last hour actually moved), converts that move into a premium
+  rise for each leg, adds a 25 percent buffer, and places the stop there
+  (clipped between 15 and 80 percent of the leg price). Once placed, that
+  stop is held for the life of that straddle and never trailed; the next
+  straddle gets fresh stops from the then-current volatility. If one leg
+  is stopped out the other keeps running with its own stop.
+- A combined stop and target on the two premiums added together, sized the
+  same adaptive way (clipped between 10 and 50 percent), plus a take-profit
+  when the sum falls 40 percent; after a 15 percent fall the combined stop
+  moves to breakeven. A fixed-percentage mode remains available in Settings.
 - The clock: no new trades before 09:20 or after 14:30, everything is
   squared off at 15:15, nothing is carried overnight, and no trading on
   holidays.
@@ -61,6 +68,8 @@ open, which exits early.
 **Dynamic straddles.** After any exit, whether a stop, a target or an early
 exit, OpenFly is free to sell a fresh straddle at the new at-the-money
 strike as soon as the readout says calm again, after a five minute pause.
+The at-the-money strike is recomputed every minute for new entries, but a
+straddle is always closed with exactly the contracts it was opened with.
 Several straddles in a day are normal. Only one is ever open at a time:
 entry, exit, then the next entry.
 
