@@ -24,11 +24,14 @@ Money rules (docs/PLAN.md section 2):
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
+
+import numpy as np
 
 from openfly.execution.costs import order_cost_inr, round_trip_inr
 from openfly.execution.types import (
@@ -58,6 +61,7 @@ from openfly.interfaces import (
     Side,
     StraddleQuote,
 )
+from openfly.straddle.expiry import selection_of, trading_minutes_to_expiry, weekday_rule
 from openfly.straddle.guard import Guard, GuardContext, GuardResult, hhmm
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -117,6 +121,191 @@ def _to_dt(epoch: float, fallback: datetime) -> datetime:
         return fallback
 
 
+@dataclass(frozen=True)
+class StopBasis:
+    """How the stop distances of one straddle were derived. Fixed for the life of that straddle."""
+
+    mode: str
+    horizon_minutes: int
+    expected_move_points: float | None
+    implied_move_points: float | None
+    realized_move_points: float | None
+    leg_stop_pct: dict[str, float]
+    combined_stop_pct: float
+    leg_rise_points: dict[str, float] = field(default_factory=dict)
+    combined_rise_points: float | None = None
+    greeks: dict[str, dict[str, float]] = field(default_factory=dict)
+    bars_used: int = 0
+    minutes_to_expiry: float | None = None
+    buffer: float | None = None
+    clipped: dict[str, str] = field(default_factory=dict)
+    bounds: dict[str, list[float]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        rnd = lambda v: None if v is None else round(float(v), 2)  # noqa: E731
+        return {
+            "mode": self.mode,
+            "horizon_minutes": self.horizon_minutes,
+            "expected_move_points": rnd(self.expected_move_points),
+            "implied_move_points": rnd(self.implied_move_points),
+            "realized_move_points": rnd(self.realized_move_points),
+            "leg_stop_pct": {k: round(v, 2) for k, v in self.leg_stop_pct.items()},
+            "combined_stop_pct": round(self.combined_stop_pct, 2),
+            "leg_rise_points": {k: round(v, 2) for k, v in self.leg_rise_points.items()},
+            "combined_rise_points": rnd(self.combined_rise_points),
+            "greeks": {k: {g: round(x, 6) for g, x in v.items()} for k, v in self.greeks.items()},
+            "bars_used": self.bars_used,
+            "minutes_to_expiry": rnd(self.minutes_to_expiry),
+            "buffer": self.buffer,
+            "clipped": dict(self.clipped),
+            "bounds": dict(self.bounds),
+        }
+
+
+class StopSizer:
+    """Volatility-adaptive stop percentages (docs/api-spec.md, Volatility-adaptive stops).
+
+    At each entry: m = max(implied, realized) over `stop_horizon_minutes`, where
+    implied = combined premium x sqrt(horizon / minutes to expiry) and realized =
+    std of the trailing one-minute log returns x sqrt(horizon) x index (fewer than
+    20 bars: implied only). Per leg the premium rise for a move m against the leg is
+    |delta| x m + 0.5 x gamma x m squared; the leg stop percent is stop_buffer x rise
+    / leg price, clipped to [leg_stop_min_pct, leg_stop_max_pct]. Combined: rise =
+    0.5 x (gamma_ce + gamma_pe) x m squared + |net delta| x m, clipped likewise.
+    Delta and gamma come from optional `delta` and `gamma` attributes on the leg
+    quotes; otherwise ATM defaults (delta 0.5 and -0.5, gamma 0.4 / (index x sigma x
+    sqrt(T)) with sigma x sqrt(T) read from the premium as premium / (0.8 x index)).
+    """
+
+    MIN_BARS = 20
+
+    def __init__(self, settings: dict, is_trading_day: Callable[[date], bool] | None = None):
+        self.settings = settings
+        self.is_trading_day = is_trading_day or weekday_rule
+
+    @property
+    def strategy(self) -> dict:
+        return self.settings.get("strategy", {})
+
+    @property
+    def mode(self) -> str:
+        return str(self.strategy.get("stop_mode", "adaptive")).lower()
+
+    def fixed(self) -> StopBasis:
+        leg = float(self.strategy.get("leg_stop_pct", 30.0) or 0.0)
+        combined = float(self.strategy.get("stop_pct", 25.0) or 0.0)
+        return StopBasis(
+            mode="fixed",
+            horizon_minutes=int(self.strategy.get("stop_horizon_minutes", 60) or 60),
+            expected_move_points=None,
+            implied_move_points=None,
+            realized_move_points=None,
+            leg_stop_pct={"ce": leg, "pe": leg},
+            combined_stop_pct=combined,
+        )
+
+    @staticmethod
+    def _clip(value: float, low: float, high: float) -> tuple[float, str]:
+        if value < low:
+            return low, "min"
+        if value > high:
+            return high, "max"
+        return value, ""
+
+    def realized_move(self, observation: MarketObservation | None, horizon: int) -> tuple[float | None, float | None, int]:
+        """(index level, realized move in points over the horizon or None, bars used)."""
+        if observation is None or not observation.index_bars:
+            return None, None, 0
+        bars = [b for b in observation.index_bars if b.close > 0]
+        index = bars[-1].close if bars else None
+        if len(bars) < self.MIN_BARS:
+            return index, None, len(bars)
+        # intraday returns only: a pair of bars on different dates spans the overnight gap,
+        # which is not the volatility a stop for the next hour should be sized on
+        pairs = [(b1, b2) for b1, b2 in zip(bars[:-1], bars[1:], strict=True) if b1.timestamp.date() == b2.timestamp.date()]
+        if len(pairs) < 2:
+            return index, None, len(bars)
+        returns = np.asarray([math.log(b2.close / b1.close) for b1, b2 in pairs], dtype=np.float64)
+        std = float(np.std(returns, ddof=1))
+        gaps = [(b2.timestamp - b1.timestamp).total_seconds() / 60.0 for b1, b2 in pairs]
+        gaps = [g for g in gaps if g > 0]
+        interval = float(np.median(gaps)) if gaps else 1.0
+        realized = std * math.sqrt(horizon / max(interval, 1e-9)) * float(index)
+        return index, realized, len(bars)
+
+    @staticmethod
+    def greeks(quote: StraddleQuote, index: float, combined: float) -> dict[str, dict[str, float]]:
+        sigma_sqrt_t = combined / (0.8 * index) if index > 0 and combined > 0 else 0.0
+        default_gamma = 0.4 / (index * sigma_sqrt_t) if index > 0 and sigma_sqrt_t > 0 else 0.0
+        out: dict[str, dict[str, float]] = {}
+        for key, leg, default_delta in (("ce", quote.call, 0.5), ("pe", quote.put, -0.5)):
+            delta = getattr(leg, "delta", None)
+            gamma = getattr(leg, "gamma", None)
+            out[key] = {
+                "delta": float(delta) if delta is not None else default_delta,
+                "gamma": float(gamma) if gamma is not None and float(gamma) > 0 else default_gamma,
+            }
+        return out
+
+    def compute(
+        self,
+        quote: StraddleQuote | None,
+        observation: MarketObservation | None,
+        now: datetime,
+        call_price: float | None = None,
+        put_price: float | None = None,
+    ) -> StopBasis:
+        if self.mode != "adaptive" or quote is None:
+            return self.fixed()
+        ce = float(call_price if call_price else quote.call.ltp)
+        pe = float(put_price if put_price else quote.put.ltp)
+        combined = ce + pe
+        if combined <= 0 or ce <= 0 or pe <= 0:
+            return self.fixed()
+        horizon = int(self.strategy.get("stop_horizon_minutes", 60) or 60)
+        buffer = float(self.strategy.get("stop_buffer", 1.25) or 1.0)
+        leg_low = float(self.strategy.get("leg_stop_min_pct", 15.0))
+        leg_high = float(self.strategy.get("leg_stop_max_pct", 80.0))
+        c_low = float(self.strategy.get("combined_stop_min_pct", 10.0))
+        c_high = float(self.strategy.get("combined_stop_max_pct", 50.0))
+        # trading minutes (375 per session) to the selected expiry's 15:30, not calendar minutes
+        minutes_to_expiry = trading_minutes_to_expiry(now, quote.expiry, self.is_trading_day)
+        implied = combined * math.sqrt(horizon / minutes_to_expiry)
+        index, realized, bars_used = self.realized_move(observation, horizon)
+        if index is None or index <= 0:
+            index = quote.synthetic_forward
+        m = max(implied, realized or 0.0)
+        greeks = self.greeks(quote, index, combined)
+        rises = {}
+        pcts = {}
+        clipped = {}
+        for key, price in (("ce", ce), ("pe", pe)):
+            g = greeks[key]
+            rise = abs(g["delta"]) * m + 0.5 * g["gamma"] * m * m
+            rises[key] = rise
+            pcts[key], clipped[key] = self._clip(buffer * rise / price * 100.0, leg_low, leg_high)
+        net_delta = abs(abs(greeks["ce"]["delta"]) - abs(greeks["pe"]["delta"]))
+        combined_rise = 0.5 * (greeks["ce"]["gamma"] + greeks["pe"]["gamma"]) * m * m + net_delta * m
+        combined_pct, clipped["combined"] = self._clip(buffer * combined_rise / combined * 100.0, c_low, c_high)
+        return StopBasis(
+            mode="adaptive",
+            horizon_minutes=horizon,
+            expected_move_points=m,
+            implied_move_points=implied,
+            realized_move_points=realized,
+            leg_stop_pct=pcts,
+            combined_stop_pct=combined_pct,
+            leg_rise_points=rises,
+            combined_rise_points=combined_rise,
+            greeks=greeks,
+            bars_used=bars_used,
+            minutes_to_expiry=minutes_to_expiry,
+            buffer=buffer,
+            clipped=clipped,
+            bounds={"leg": [leg_low, leg_high], "combined": [c_low, c_high]},
+        )
+
+
 @dataclass
 class LegState:
     contract: Contract
@@ -169,6 +358,7 @@ class Position:
     fills: list[Fill] = field(default_factory=list)
     leg_stops_hit: int = 0
     repairs: int = 0
+    basis: StopBasis | None = None
 
     def open_legs(self) -> list[LegState]:
         return [leg for leg in self.legs.values() if leg.status == "open"]
@@ -271,10 +461,18 @@ def fill_summary(fill: Fill) -> dict[str, Any]:
 class StraddleEngine:
     """See the module docstring. One instance per run; call `start_day` (or pass a window) per day."""
 
-    def __init__(self, settings: dict, cost_model: Any = None, guard: Guard | None = None):
+    def __init__(
+        self,
+        settings: dict,
+        cost_model: Any = None,
+        guard: Guard | None = None,
+        is_trading_day: Callable[[date], bool] | None = None,
+    ):
         self.settings = settings
         self.cost_model = cost_model
-        self.guard = guard or Guard(settings)
+        self.is_trading_day = is_trading_day or weekday_rule
+        self.guard = guard or Guard(settings, is_trading_day=self.is_trading_day)
+        self.stop_sizer = StopSizer(settings, is_trading_day=self.is_trading_day)
         self.state = State.FLAT
         self.window: SessionWindow | None = None
         self.trading_date: date | None = None
@@ -344,6 +542,19 @@ class StraddleEngine:
     @property
     def combined_stop_enabled(self) -> bool:
         return bool(self.strategy.get("combined_stop_enabled", True))
+
+    @property
+    def stop_mode(self) -> str:
+        return str(self.strategy.get("stop_mode", "adaptive")).lower()
+
+    @property
+    def expiry_selection(self) -> str:
+        return selection_of(self.settings)
+
+    def _sizing_stop_pct(self, basis: StopBasis) -> float:
+        if self.combined_stop_enabled and basis.combined_stop_pct > 0:
+            return basis.combined_stop_pct
+        return max(basis.leg_stop_pct.values(), default=self.leg_stop_pct)
 
     @property
     def square_off_lead(self) -> timedelta:
@@ -417,11 +628,20 @@ class StraddleEngine:
     # ------------------------------------------------------------ sizing
 
     def size_lots(
-        self, entry_credit: float, margin_available: float | None = None, margin_per_lot: float | None = None
+        self,
+        entry_credit: float,
+        margin_available: float | None = None,
+        margin_per_lot: float | None = None,
+        stop_pct: float | None = None,
     ) -> tuple[int, dict[str, Any]]:
-        """lots = floor(risk budget / (credit x stop percent x lot size)), then the caps."""
+        """lots = floor(risk budget / (credit x stop percent x lot size)), then the caps.
+
+        `stop_pct` defaults to the fixed settings; in adaptive mode the caller passes
+        the combined stop percentage the StopSizer computed for this entry.
+        """
         budget = self.capital * self.risk_budget_pct / 100.0
-        stop_pct = self.stop_pct if self.combined_stop_enabled and self.stop_pct > 0 else self.leg_stop_pct
+        if stop_pct is None:
+            stop_pct = self.stop_pct if self.combined_stop_enabled and self.stop_pct > 0 else self.leg_stop_pct
         risk_per_lot = entry_credit * stop_pct / 100.0 * self.lot_size
         risk_lots = math.floor(budget / risk_per_lot) if risk_per_lot > 0 else 0
         lots = max(1, min(risk_lots, self.max_lots))
@@ -491,13 +711,17 @@ class StraddleEngine:
                 step.action = Action.HOLD.value
         else:  # FLAT
             if prediction is not None and prediction.decision == Decision.ENTER and quote is not None:
-                lots, sizing = self.size_lots(quote.combined_ltp, ctx.margin_available, ctx.margin_per_lot)
+                basis = self.stop_sizer.compute(quote, observation, now)
+                lots, sizing = self.size_lots(
+                    quote.combined_ltp, ctx.margin_available, ctx.margin_per_lot, stop_pct=self._sizing_stop_pct(basis)
+                )
+                sizing["stop_basis"] = basis.to_dict()
                 step.sizing = sizing
                 merged = self._merge_ctx(ctx, now, quote, prediction, observation, lots, sizing["detail"])
                 result = self.guard.check_entry(merged)
                 step.guard = result
                 if result.allowed:
-                    self._emit_entry(step, quote, lots, prediction, now, sizing)
+                    self._emit_entry(step, quote, lots, prediction, now, sizing, basis)
                 else:
                     step.action = Action.VETO.value
                     self.vetoes += 1
@@ -779,7 +1003,16 @@ class StraddleEngine:
         self._pending = intent
         return intent
 
-    def _emit_entry(self, step: EngineStep, quote: StraddleQuote, lots: int, prediction: Prediction, now: datetime, sizing: dict) -> None:
+    def _emit_entry(
+        self,
+        step: EngineStep,
+        quote: StraddleQuote,
+        lots: int,
+        prediction: Prediction,
+        now: datetime,
+        sizing: dict,
+        basis: StopBasis | None = None,
+    ) -> None:
         qty = lots * self.lot_size
         call_c = self._contract(quote.call, quote, "CE")
         put_c = self._contract(quote.put, quote, "PE")
@@ -797,6 +1030,7 @@ class StraddleEngine:
             },
             sizing=sizing,
             quoted_credit=quote.combined_ltp,
+            basis=basis,
         )
         self.state = State.ENTERING
         step.action = Action.REENTRY.value if self.closed else Action.ENTER.value
@@ -899,21 +1133,27 @@ class StraddleEngine:
         latest = max((f.timestamp for f in pos.fills), default=0.0)
         pos.entered_at = _to_dt(latest, now)
         credit = pos.entry_credit
-        pos.stop_level = credit * (1 + self.stop_pct / 100.0) if self.combined_stop_enabled and self.stop_pct > 0 else None
+        if pos.basis is None:
+            observation = step.observation if step.observation is not None else (self.last_step.observation if self.last_step else None)
+            pos.basis = self.stop_sizer.compute(self.last_quote, observation, now)
+        basis = pos.basis
+        combined_pct = basis.combined_stop_pct
+        pos.stop_level = credit * (1 + combined_pct / 100.0) if self.combined_stop_enabled and combined_pct > 0 else None
         pos.target_level = credit * (1 - self.target_pct / 100.0) if self.target_pct > 0 else None
         pos.lock_level = credit * (1 - self.lock_after_pct / 100.0) if self.lock_after_pct > 0 and pos.stop_level is not None else None
         for leg in pos.legs.values():
-            if self.leg_stop_pct > 0:
-                leg.stop_price = ceil_to_tick(leg.entry_price * (1 + self.leg_stop_pct / 100.0))
+            pct = basis.leg_stop_pct.get("ce" if leg.option_type == "CE" else "pe", self.leg_stop_pct)
+            if pct > 0:
+                leg.stop_price = ceil_to_tick(leg.entry_price * (1 + pct / 100.0))
                 leg.stop_status = "software" if self.leg_stop_mode == "software" else "none"
         self.entries_today += 1
         self.state = State.IN_POSITION
         self._exit_failures = 0
-        if self.leg_stop_mode == "broker" and self.leg_stop_pct > 0:
-            legs = tuple(
-                StopLeg(leg.contract, Side.BUY, leg.quantity, None, leg.stop_price or 0.0) for leg in pos.legs.values()
-            )
-            step.intents.append(self._new_intent(KIND_STOPS, legs, f"per-leg stops at {self.leg_stop_pct:g} percent", now))
+        stop_legs = [leg for leg in pos.legs.values() if leg.stop_price is not None]
+        if self.leg_stop_mode == "broker" and stop_legs:
+            legs = tuple(StopLeg(leg.contract, Side.BUY, leg.quantity, None, leg.stop_price or 0.0) for leg in stop_legs)
+            pcts = ", ".join(f"{k} {v:.1f} percent" for k, v in basis.leg_stop_pct.items())
+            step.intents.append(self._new_intent(KIND_STOPS, legs, f"per-leg {basis.mode} stops: {pcts}", now))
 
     def _after_leg_exit(self, step: EngineStep, intent: Intent) -> None:
         pos = self.position
@@ -986,6 +1226,8 @@ class StraddleEngine:
                 "pnl": None,
                 "entered_at": None,
                 "square_off_at": None,
+                "stop_basis": None,
+                "expiry_selection": self.expiry_selection,
             }
         legs = []
         for leg in pos.legs.values():
@@ -1015,6 +1257,8 @@ class StraddleEngine:
             "pnl": round(pos.pnl_gross(), 2),
             "entered_at": _iso(pos.entered_at),
             "square_off_at": _iso(self.window.square_off) if self.window else None,
+            "stop_basis": pos.basis.to_dict() if pos.basis is not None else None,
+            "expiry_selection": self.expiry_selection,
         }
 
     def status(self) -> dict[str, Any]:
@@ -1078,6 +1322,7 @@ class StraddleEngine:
         tech = dict(step.technical)
         if technical:
             tech.update(technical)
+        expiry = step.quote.expiry if step.quote is not None else (self.position.expiry if self.position is not None else None)
         return {
             "i": i,
             "t": step.at.isoformat(),
@@ -1086,6 +1331,8 @@ class StraddleEngine:
             "vix": vix,
             "premium": premium,
             "days_to_expiry": days_to_expiry,
+            "expiry": expiry.isoformat() if expiry else None,
+            "expiry_selection": self.expiry_selection,
             "stimulus_hash": stimulus_hash,
             "stimulus_png": stimulus_png,
             "rates_hz": rates_hz or {},
@@ -1127,6 +1374,13 @@ class StraddleEngine:
             },
             "thresholds": {
                 "tau": self.tau,
+                "stop_mode": self.stop_mode,
+                "stop_horizon_minutes": self.strategy.get("stop_horizon_minutes", 60),
+                "stop_buffer": self.strategy.get("stop_buffer", 1.25),
+                "leg_stop_min_pct": self.strategy.get("leg_stop_min_pct", 15.0),
+                "leg_stop_max_pct": self.strategy.get("leg_stop_max_pct", 80.0),
+                "combined_stop_min_pct": self.strategy.get("combined_stop_min_pct", 10.0),
+                "combined_stop_max_pct": self.strategy.get("combined_stop_max_pct", 50.0),
                 "stop_pct": self.stop_pct,
                 "target_pct": self.target_pct,
                 "lock_after_pct": self.lock_after_pct,
@@ -1183,6 +1437,7 @@ class StraddleEngine:
                 "leg_stops": {leg.symbol: {"price": leg.stop_price, "status": leg.stop_status, "order_id": leg.stop_order_id} for leg in pos.legs.values()},
                 "gross": round(pos.gross, 2),
                 "costs": round(pos.costs, 2),
+                "stop_basis": pos.basis.to_dict() if pos.basis is not None else None,
             }
             tech["costs"] = {
                 "trade_costs": round(pos.costs, 2),
@@ -1203,6 +1458,8 @@ class StraddleEngine:
         return f"The readout expects {pct:.0f} percent of the movement the straddle is pricing."
 
     def _levels_sentence(self, pos: Position) -> str:
+        if pos.basis is not None and pos.basis.mode == "adaptive":
+            return self._adaptive_sentence(pos, pos.basis)
         parts = []
         if pos.stop_level is not None:
             parts.append(f"Stop {pos.stop_level:.1f}")
@@ -1221,6 +1478,53 @@ class StraddleEngine:
             legs = ", ".join(f"{leg.word} {leg.stop_price:.2f}" for leg in stops)
             text += f" Leg stops: {legs} ({self.leg_stop_pct:g} percent, {where})."
         return text
+
+    def _adaptive_sentence(self, pos: Position, basis: StopBasis) -> str:
+        h = basis.horizon_minutes
+        span = "one-hour" if h == 60 else f"{h}-minute"
+        last = "the last hour" if h == 60 else f"the last {h} minutes"
+        m = basis.expected_move_points or 0.0
+        implied = basis.implied_move_points or 0.0
+        if basis.realized_move_points is None:
+            head = f"Expected {span} move {m:.0f} points (the straddle prices {implied:.0f}; too few bars for a realized figure)."
+        else:
+            head = f"Expected {span} move {m:.0f} points (the straddle prices {implied:.0f}, {last} realized {basis.realized_move_points:.0f})."
+        legs = {("ce" if leg.option_type == "CE" else "pe"): leg for leg in pos.legs.values()}
+        ce, pe = legs.get("ce"), legs.get("pe")
+        clauses = []
+        if ce is not None and ce.stop_price is not None:
+            clauses.append(
+                f"A move of that size lifts the call about {basis.leg_rise_points.get('ce', 0.0):.0f} points, so the call stop is "
+                f"{basis.leg_stop_pct.get('ce', 0.0):.0f} percent above its price at {ce.stop_price:.2f}{self._clip_note(basis, 'ce')}"
+            )
+        if pe is not None and pe.stop_price is not None:
+            clauses.append(f"put stop {basis.leg_stop_pct.get('pe', 0.0):.0f} percent at {pe.stop_price:.2f}{self._clip_note(basis, 'pe')}")
+        if pos.stop_level is not None:
+            clauses.append(f"combined stop {basis.combined_stop_pct:.0f} percent at {pos.stop_level:.1f}{self._clip_note(basis, 'combined')}")
+        else:
+            clauses.append("no combined stop")
+        text = head + " " + "; ".join(clauses) + "."
+        extras = []
+        if pos.target_level is not None:
+            extras.append(f"Target {pos.target_level:.1f}")
+        if pos.lock_level is not None:
+            extras.append(f"lock after {pos.lock_level:.1f}")
+        if self.window is not None:
+            extras.append(f"hard exit {hhmm(self.window.square_off)}")
+        if extras:
+            text += " " + ", ".join(extras) + "."
+        where = "software" if self.leg_stop_mode == "software" else "at the broker"
+        return text + f" Leg stops {where}, held for the life of this straddle."
+
+    @staticmethod
+    def _clip_note(basis: StopBasis, key: str) -> str:
+        kind = basis.clipped.get(key, "")
+        bounds = basis.bounds.get("combined" if key == "combined" else "leg", [None, None])
+        if kind == "min" and bounds[0] is not None:
+            return f" (floor {bounds[0]:g} percent)"
+        if kind == "max" and bounds[1] is not None:
+            return f" (cap {bounds[1]:g} percent)"
+        return ""
 
     def _result_sentence(self, record: dict[str, Any]) -> str:
         return f"Result {_inr(record['net'])} after {_inr(record['costs'])} costs. Day P&L {_inr(self.day_pnl())}."
@@ -1263,8 +1567,8 @@ class StraddleEngine:
                     prefix = "Sold"
                 qty = pos.quantity()
                 parts.append(
-                    f"{prefix} {_lots_text(pos.lots)} of the {_expiry_label(pos.expiry)} {_strike_label(pos.strike)} straddle "
-                    f"for {pos.entry_credit:.1f} points credit ({_inr(pos.entry_credit * qty)})."
+                    f"{prefix} {_lots_text(pos.lots)} of the {_expiry_label(pos.expiry)} {self.expiry_selection} straddle "
+                    f"at {_strike_label(pos.strike)} for {pos.entry_credit:.1f} points credit ({_inr(pos.entry_credit * qty)})."
                 )
                 parts.append(self._levels_sentence(pos))
             elif step.entry_failed:

@@ -95,7 +95,10 @@ def test_trace_has_the_spec_fields_and_the_right_actions():
     assert enter["stimulus_hash"].startswith("sha256:")
     assert enter["technical"]["encoder"] == "fake" and enter["technical"]["readout"] == "fake"
     assert enter["technical"]["lots"]["lots"] == 1
-    assert "10:00. NIFTY 23," in enter["narrative"] and "Sold 1 lot of the 15-SEP-26 23350 straddle" in enter["narrative"]
+    assert "10:00. NIFTY 23," in enter["narrative"] and "Sold 1 lot of the 29-SEP-26 monthly straddle at 23350" in enter["narrative"]
+    assert enter["expiry"] == "2026-09-29" and enter["expiry_selection"] == "monthly"
+    assert enter["straddle"]["expiry"] == "2026-09-29" and enter["straddle"]["expiry_selection"] == "monthly"
+    assert trace.config["expiry_selection"] == "monthly"
     assert "Leg stops: call" in enter["narrative"]
     exit_ = by_time["12:00"]
     assert exit_["action"] == "EXIT"

@@ -28,6 +28,7 @@ from openfly.execution.ledger import Ledger
 from openfly.execution.types import execution_settings, quote_lookup_for
 from openfly.interfaces import Bar, Quote, StraddleQuote, UnresolvedOrder
 from openfly.straddle.engine import Action, EngineStep, State, StraddleEngine
+from openfly.straddle.expiry import select_expiry_for, selection_of
 from openfly.straddle.guard import GuardContext
 from openfly.straddle.replay import (
     _json_default,
@@ -136,7 +137,9 @@ class Worker:
         self.broker = broker
         self.cost_model = cost_model if cost_model is not None else load_cost_model(settings)
         self.ledger = ledger if ledger is not None else Ledger(self.run_dir, self.cost_model)
-        self.engine = engine if engine is not None else StraddleEngine(settings, self.cost_model)
+        self.engine = engine if engine is not None else StraddleEngine(
+            settings, self.cost_model, is_trading_day=getattr(calendar, "is_trading_day", None)
+        )
         self._clock = clock or (lambda: datetime.now(IST))
         self._sleep = sleep or _time.sleep
         self.history_bars = history_bars
@@ -170,6 +173,7 @@ class Worker:
         self._last_neural: dict[str, Any] = {"rates_hz": {}, "fixed_decoder": {}, "stimulus_hash": None}
         self._last_trace: dict[str, Any] | None = None
         self._stop = False
+        self._expiry_choice: tuple[date, date] | None = None
         self._events_path = self.run_dir / "events.jsonl"
         self._state_path = self.run_dir / "state.json"
 
@@ -261,6 +265,17 @@ class Worker:
                 self._log("STOP file present; stopping")
                 self._stop = True
                 break
+            squareoff_file = self.run_dir / "SQUAREOFF"
+            if squareoff_file.exists():
+                try:
+                    squareoff_file.unlink()
+                except OSError:
+                    pass
+                if self.engine.in_position:
+                    step = self.engine.square_off_now(now, "manual square-off requested")
+                    self._run_step(step, now, {"trigger": "manual"})
+                else:
+                    self._log("SQUAREOFF requested with a flat book; nothing to do")
             index = self._index_ltp()
             if index is not None and self._builder is not None:
                 self._builder.add(now, index)
@@ -335,9 +350,29 @@ class Worker:
                 known.add(bar.timestamp)
         self._builder.completed.clear()
 
-    def _resolve_legs(self) -> bool:
+    def _selected_expiry(self) -> date | None:
+        """The expiry of `strategy.expiry_selection` for today, from the chain resolver or the rule."""
+        day = self.window.trading_date if self.window is not None else self.now().date()
+        if self._expiry_choice is not None and self._expiry_choice[0] == day:
+            return self._expiry_choice[1]
         try:
-            snap = self.chain.chain_snapshot()
+            expiry, source = select_expiry_for(
+                day, self.settings, resolver=self.chain, is_trading_day=getattr(self.calendar, "is_trading_day", None)
+            )
+        except Exception as exc:
+            self._log(f"expiry selection failed: {exc}")
+            return None
+        self._expiry_choice = (day, expiry)
+        self._log(f"{selection_of(self.settings)} expiry for {day.isoformat()}: {expiry.isoformat()} ({source})")
+        return expiry
+
+    def _resolve_legs(self) -> bool:
+        selected = self._selected_expiry()
+        try:
+            try:
+                snap = self.chain.chain_snapshot(expiry=selected) if selected is not None else self.chain.chain_snapshot()
+            except TypeError:
+                snap = self.chain.chain_snapshot()
         except Exception as exc:
             self._log(f"chain snapshot failed: {exc}")
             return False
@@ -361,6 +396,8 @@ class Worker:
         if not ce or not pe or strike is None or expiry is None:
             self._log("chain snapshot is incomplete (legs, strike or expiry missing)")
             return False
+        if selected is not None and expiry != selected:
+            self._log(f"chain snapshot quotes expiry {expiry.isoformat()} while the selection is {selected.isoformat()}; using the quoted contracts")
         changed = self.legs != (ce, pe)
         self.legs = (ce, pe)
         self.strike = float(strike)
@@ -580,6 +617,7 @@ class Worker:
                 "legs": list(self.legs) if self.legs else None,
                 "strike": self.strike,
                 "expiry": self.expiry.isoformat() if self.expiry else None,
+                "expiry_selection": selection_of(self.settings),
                 "steps": self.steps_written,
             },
             "straddle": self.engine.state_snapshot(),

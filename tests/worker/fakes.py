@@ -23,9 +23,9 @@ from openfly.interfaces import (
 
 IST = ZoneInfo("Asia/Kolkata")
 DAY = date(2026, 9, 11)
-EXPIRY = date(2026, 9, 15)
-CE = "NIFTY15SEP2623350CE"
-PE = "NIFTY15SEP2623350PE"
+EXPIRY = date(2026, 9, 29)  # the September monthly expiry
+CE = "NIFTY29SEP2623350CE"
+PE = "NIFTY29SEP2623350PE"
 
 
 def at(hh: int, mm: int, ss: int = 0, day: date = DAY) -> datetime:
@@ -33,7 +33,8 @@ def at(hh: int, mm: int, ss: int = 0, day: date = DAY) -> datetime:
 
 
 def settings_with(**overrides) -> dict:
-    update: dict = {}
+    """DEFAULT_SETTINGS with fixed stops (the adaptive tests opt in) plus section__key overrides."""
+    update: dict = {"strategy": {"stop_mode": "fixed"}}
     for key, value in overrides.items():
         section, _, name = key.partition("__")
         update.setdefault(section, {})[name] = value
@@ -232,8 +233,13 @@ class FakeChain:
         self.expiry = expiry
         self.calls = 0
 
-    def chain_snapshot(self) -> dict:
+    def select_expiry(self, settings: dict) -> date:
+        return self.expiry
+
+    def chain_snapshot(self, expiry: date | None = None) -> dict:
         self.calls += 1
+        if expiry is not None:
+            assert expiry == self.expiry, "the worker must ask for the selected expiry"
         code = self.expiry.strftime("%d%b%y").upper()
         return {
             "underlying": "NIFTY",

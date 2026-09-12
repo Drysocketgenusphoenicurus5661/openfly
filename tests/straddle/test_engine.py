@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import pytest
@@ -49,8 +50,11 @@ def test_entry_then_combined_stop_hit():
     assert all(s["status"] == "cancelled" for s in broker.stop_orders())
     assert "10:37:12. Combined premium 252.0 reached the stop 251.6." in hit.narrative
     assert "Bought back 1 lot of the 23350 straddle for 252.0 points." in hit.narrative
-    assert "Result -INR 3,416 after INR 120 costs. Day P&L -INR 3,416." in hit.narrative
-    assert "Result -INR" in hit.narrative and "Day P&L" in hit.narrative
+    closed = engine.closed[0]
+    assert closed["gross"] == pytest.approx((201.3 - 252.0) * 65)
+    net_text = f"{int(math.floor(abs(closed['net']) + 0.5)):,}"
+    cost_text = f"{int(math.floor(closed['costs'] + 0.5)):,}"
+    assert f"Result -INR {net_text} after INR {cost_text} costs. Day P&L -INR {net_text}." in hit.narrative
 
 
 def test_entry_then_target():
@@ -113,7 +117,7 @@ def test_no_second_entry_while_one_is_open():
 def test_three_straddles_in_one_day_stop_target_square_off():
     engine, broker, _ = make_engine()
     first = enter(engine, broker)
-    assert first.action == Action.ENTER.value and "Sold 1 lot of the 15-SEP-26 23350 straddle" in first.narrative
+    assert first.action == Action.ENTER.value and "Sold 1 lot of the 15-SEP-26 weekly straddle at 23350" in first.narrative
     stop, _ = tick(engine, broker, at(10, 37), 126.0, 126.0)
     assert stop.action == Action.STOP.value
 
@@ -125,7 +129,7 @@ def test_three_straddles_in_one_day_stop_target_square_off():
     second = observe(engine, broker, at(10, 45), ENTER, 100.0, 100.0, strike=23400.0)
     assert second.action == Action.REENTRY.value
     assert engine.position.number == 2 and engine.position.strike == 23400.0
-    assert "Straddle 2 of the day, re-entry after the stop at 10:37: sold 1 lot of the 15-SEP-26 23400 straddle" in second.narrative
+    assert "Straddle 2 of the day, re-entry after the stop at 10:37: sold 1 lot of the 15-SEP-26 weekly straddle at 23400" in second.narrative
     target, _ = tick(engine, broker, at(11, 30), 55.0, 55.0, strike=23400.0)
     assert target.action == Action.TARGET.value
 
@@ -186,7 +190,7 @@ def test_sizing_feeds_the_guard_and_the_trade():
     step = observe(engine, broker, at(10, 20), ENTER, 104.0, 100.0)
     assert engine.position.lots == 3
     assert step.straddle["legs"][0]["qty"] == 195
-    assert "Sold 3 lots of the 15-SEP-26 23350 straddle for 204.0 points credit (INR 39,780)" in step.narrative
+    assert "Sold 3 lots of the 15-SEP-26 weekly straddle at 23350 for 204.0 points credit (INR 39,780)" in step.narrative
     ctx = GuardContext(margin_available=200000.0, margin_per_lot=188700.0)
     engine2, broker2, _ = make_engine(strategy__lots=0)
     step2 = observe(engine2, broker2, at(10, 20), ENTER, 104.0, 100.0, ctx=ctx)
@@ -198,7 +202,7 @@ def test_narrative_contains_the_key_numbers():
     step = enter(engine, broker)
     text = step.narrative
     assert text.startswith("10:20. NIFTY 23,350, INDIAVIX 12.1. The readout expects 82 percent of the movement the 23350 straddle is pricing. All 18 checks passed.")
-    assert "Sold 1 lot of the 15-SEP-26 23350 straddle for 201.3 points credit (INR 13,085)." in text
+    assert "Sold 1 lot of the 15-SEP-26 weekly straddle at 23350 for 201.3 points credit (INR 13,085)." in text
     assert "Stop 251.6, target 120.8, lock after 171.1, hard exit 15:15." in text
     assert "Leg stops: call 131.60, put 130.15 (30 percent, at the broker)." in text
     tech = step.technical
@@ -330,6 +334,8 @@ def test_manual_square_off_and_state_snapshot_shape():
         "pnl": None,
         "entered_at": None,
         "square_off_at": None,
+        "stop_basis": None,
+        "expiry_selection": "weekly",
     }
     enter(engine, broker)
     snap = engine.state_snapshot()

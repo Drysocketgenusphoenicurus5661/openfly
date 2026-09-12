@@ -69,6 +69,9 @@ def test_paper_day_enters_exits_and_writes_events_and_state(tmp_path):
     state = json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8"))
     assert state["worker"]["state"] == "stopped" and state["worker"]["mode"] == "paper"
     assert state["worker"]["legs"] == [CE, PE] and state["worker"]["strike"] == 23350.0
+    assert state["worker"]["expiry"] == "2026-09-29" and state["worker"]["expiry_selection"] == "monthly"
+    assert state["straddle"]["expiry_selection"] == "monthly"
+    assert enter["straddle"]["expiry"] == "2026-09-29"
     assert state["straddle"]["in_position"] is False
     assert state["engine"]["early_exits"] == 1 and state["engine"]["entries_today"] == 1
     assert state["last_step"]["narrative"]

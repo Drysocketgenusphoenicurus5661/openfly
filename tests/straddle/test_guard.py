@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 
 import pytest
 
@@ -120,9 +121,15 @@ def test_expiry_day_allowed_with_min_dte_zero_and_refused_with_one():
     ok = Guard(settings_with(strategy__min_days_to_expiry=0)).expiry_min_dte(ctx)
     assert ok.ok and "expiry-day trading is allowed" in ok.detail
     no = Guard(settings_with(strategy__min_days_to_expiry=1)).expiry_min_dte(ctx)
-    assert not no.ok and "at least 1 day to expiry is required" in no.detail
+    assert not no.ok and "at least 1 trading day to expiry is required" in no.detail
     later = Guard(settings_with(strategy__min_days_to_expiry=1)).expiry_min_dte(replace(ctx, quote=sq(at(10, 20), 101.2, 100.1, expiry=EXPIRY)))
-    assert later.ok and "expires in 4 days" in later.detail
+    assert later.ok and later.detail == "the 15-SEP-26 weekly expiry is 2 trading days away, at least 1 required"
+    monthly = Guard(settings_with(strategy__min_days_to_expiry=3, strategy__expiry_selection="monthly")).expiry_min_dte(
+        replace(ctx, quote=sq(at(10, 20), 180.0, 175.0, expiry=date(2026, 9, 29)))
+    )
+    assert monthly.ok and monthly.detail == "the 29-SEP-26 monthly expiry is 12 trading days away, at least 3 required"
+    holiday_aware = Guard(settings_with(strategy__min_days_to_expiry=3), is_trading_day=lambda d: d.weekday() < 5 and d != date(2026, 9, 14))
+    assert "1 trading day away" in holiday_aware.expiry_min_dte(replace(ctx, quote=sq(at(10, 20), 101.2, 100.1, expiry=EXPIRY))).detail
 
 
 def test_entries_per_day_zero_means_unlimited():

@@ -51,7 +51,9 @@ are ordinary risk engineering (docs/PLAN.md, section 1, rule 3).
   - `on_stops_placed(records)`: order ids and statuses of resting stops.
   - `repair_intent(detail) -> Intent | None`: REPAIR after a one-legged fill.
   - `square_off_now(now, reason) -> EngineStep`: STOP file or manual square-off.
-  - `size_lots(entry_credit, margin_available=None, margin_per_lot=None) -> (lots, math)`
+  - `size_lots(entry_credit, margin_available=None, margin_per_lot=None, stop_pct=None) -> (lots, math)`
+    (`stop_pct` defaults to the fixed setting; adaptive entries pass the StopSizer's combined percentage)
+  - `StopSizer(settings).compute(quote, observation, now) -> StopBasis` and `StopBasis.to_dict()`
   - `state_snapshot()`: exactly the GET /api/straddle shape (legs carry
     stop_price, stop_order_id, stop_status, status).
   - `status()`: state, counters, day P&L, lock state, pending intent.
@@ -75,8 +77,42 @@ Rules implemented:
 - Combined stop at credit x (1 + stop_pct/100) when `combined_stop_enabled`,
   target at credit x (1 - target_pct/100), lock: once the premium is
   lock_after_pct below the credit the stop moves to the credit.
-- Per-leg fixed stops at entry_price x (1 + leg_stop_pct/100) rounded up to
-  the tick. `leg_stop_mode` broker: a STOPS intent (one BUY SL-M leg per
+- Volatility-adaptive stop distances (`stop_mode` adaptive, the default).
+  `StopSizer(settings).compute(quote, observation, now) -> StopBasis` runs at
+  every entry decision: m = max(implied, realized) over
+  `stop_horizon_minutes`, implied = combined premium x sqrt(horizon /
+  minutes to expiry), realized = std of the trailing log returns of
+  `observation.index_bars` x sqrt(horizon / bar interval) x index (fewer than
+  20 bars: implied only; returns that span the overnight gap are excluded, so
+  early entries are sized on intraday volatility, not on the opening jump). Per leg the rise for a move m against the leg is
+  |delta| x m + 0.5 x gamma x m squared and the stop percent is `stop_buffer`
+  x rise / leg price clipped to [`leg_stop_min_pct`, `leg_stop_max_pct`];
+  combined rise = 0.5 x (gamma_ce + gamma_pe) x m squared + |net delta| x m
+  clipped to [`combined_stop_min_pct`, `combined_stop_max_pct`]. Delta and
+  gamma are read from optional `delta` and `gamma` attributes on the leg
+  Quote objects (the chain resolver may attach them); otherwise ATM defaults
+  apply (delta 0.5 and -0.5, gamma 0.4 / (index x sigma x sqrt(T)) with
+  sigma x sqrt(T) = premium / (0.8 x index), which reproduces the measured
+  gamma 0.00156 for the 204 point straddle). Net delta is the difference of
+  the absolute deltas, so a symmetric straddle has zero net delta. The
+  percentages are fixed for the life of that straddle (never trailed) and
+  recomputed for every new straddle; the combined percentage also sizes the
+  lots. `stop_mode` fixed keeps `stop_pct` and `leg_stop_pct`. The
+  `stop_basis` dict (mode, horizon_minutes, expected_move_points,
+  implied_move_points, realized_move_points, leg_stop_pct, combined_stop_pct,
+  plus rises, greeks, bars_used, clipping notes) is in the straddle payload of
+  `state_snapshot()`, in every trace step's `straddle` and in
+  `technical.levels`; the entry narrative explains it ("Expected one-hour
+  move 73 points (the straddle prices 20, the last hour realized 73). A move
+  of that size lifts the call about 41 points, so the call stop is 50 percent
+  above its price at 152.10; put stop 51 percent at 151.00; combined stop 10
+  percent at 221.4 (floor 10 percent). Target 120.8, lock after 171.1, hard
+  exit 15:15. Leg stops at the broker, held for the life of this straddle.").
+  With a symmetric straddle the combined rise is gamma-only and small, so the
+  combined stop usually sits at `combined_stop_min_pct`; the floor is what
+  protects the pair, the leg stops carry the volatility adjustment.
+- Per-leg fixed stops at entry_price x (1 + leg stop percent/100) rounded up
+  to the tick. `leg_stop_mode` broker: a STOPS intent (one BUY SL-M leg per
   option, `StopLeg.trigger_price`) is emitted right after the entry fills.
   `leg_stop_mode` software: `on_tick` compares each leg's LTP with its stop
   and emits an EXIT_LEG intent (action STOP_LEG). The stops are never
@@ -95,7 +131,22 @@ Rules implemented:
   means unlimited). Strictly one straddle at a time. The first entry of the
   day is action ENTER, later ones REENTRY; narratives number them
   ("Straddle 2 of the day, re-entry after the stop at 10:37: sold ...").
-- Expiry day is allowed when min_days_to_expiry is 0.
+- Expiry selection. The straddle trades the current MONTH expiry by default
+  (`strategy.expiry_selection` monthly: the last expiry of the calendar
+  month, 29-SEP-26 in September; weekly selects the nearest Tuesday). The
+  worker asks `ChainResolver.select_expiry(settings)` or
+  `expiry_for_date(day, selection)` and passes the result to
+  `chain_snapshot(expiry=...)`; replay-day uses `expiry_for_date` for the
+  replayed date; both fall back to the rule in `openfly/straddle/expiry.py`
+  (last Tuesday of the month, moved to the previous trading day when it is a
+  holiday). The guard's expiry_min_dte counts trading days to the selected
+  expiry ("the 29-SEP-26 monthly expiry is 12 trading days away"), the
+  adaptive stops count trading minutes to its 15:30 (375 per session plus the
+  rest of today, never calendar minutes: from 10:20 on 11-SEP-26 that is 4,810
+  minutes to 29-SEP-26 against 1,060 to 15-SEP-26), `expiry` and
+  `expiry_selection` are carried in `state_snapshot()`, in every trace step
+  and in the DayTrace config, and narratives say "the 29-SEP-26 monthly
+  straddle at 23350". Expiry day is allowed when min_days_to_expiry is 0.
 - An exit whose orders are rejected is retried on the next tick; three
   failures halt the engine.
 - Strike guarantee. The strike of a new entry is computed from the latest

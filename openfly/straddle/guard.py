@@ -8,11 +8,13 @@ or no, and every check carries a plain-language detail for traders.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from openfly.interfaces import Prediction, SessionWindow, StraddleQuote
+from openfly.straddle.expiry import expiry_label, selection_of, trading_days_between, weekday_rule
 
 
 @dataclass(frozen=True)
@@ -89,8 +91,9 @@ def _inr(value: float) -> str:
 class Guard:
     """Reject-only checks driven by the settings dict."""
 
-    def __init__(self, settings: dict):
+    def __init__(self, settings: dict, is_trading_day: Callable[[date], bool] | None = None):
         self.settings = settings
+        self.is_trading_day = is_trading_day or weekday_rule
 
     # ----------------------------------------------------------- settings
 
@@ -168,17 +171,19 @@ class Guard:
         if ctx.quote is None or ctx.window is None:
             return GuardCheck("expiry_min_dte", min_dte <= 0, "no quote, expiry unknown" if min_dte > 0 else "expiry check not required (min_days_to_expiry 0)")
         expiry = ctx.quote.expiry
-        days = (expiry - ctx.window.trading_date).days
-        label = expiry.strftime("%d-%b-%y").upper()
+        today = ctx.window.trading_date
+        days = trading_days_between(today, expiry, self.is_trading_day)
+        label = f"the {expiry_label(expiry)} {selection_of(self.settings)} expiry"
+        unit = "trading day" if days == 1 else "trading days"
         if min_dte <= 0:
-            if days <= 0:
+            if expiry <= today:
                 return GuardCheck("expiry_min_dte", True, f"today is expiry day for {label} and expiry-day trading is allowed (min_days_to_expiry 0)")
-            return GuardCheck("expiry_min_dte", True, f"{label} expires in {days} day{'s' if days != 1 else ''}; no minimum required")
+            return GuardCheck("expiry_min_dte", True, f"{label} is {days} {unit} away; no minimum required")
         if days >= min_dte:
-            return GuardCheck("expiry_min_dte", True, f"{label} expires in {days} days, at least {min_dte} required")
-        if days <= 0:
-            return GuardCheck("expiry_min_dte", False, f"today is expiry day for {label} and at least {min_dte} day{'s' if min_dte != 1 else ''} to expiry is required")
-        return GuardCheck("expiry_min_dte", False, f"{label} expires in {days} day{'s' if days != 1 else ''}, at least {min_dte} required")
+            return GuardCheck("expiry_min_dte", True, f"{label} is {days} {unit} away, at least {min_dte} required")
+        if expiry <= today:
+            return GuardCheck("expiry_min_dte", False, f"today is expiry day for {label} and at least {min_dte} trading day{'s' if min_dte != 1 else ''} to expiry is required")
+        return GuardCheck("expiry_min_dte", False, f"{label} is {days} {unit} away, at least {min_dte} required")
 
     def vix_ceiling(self, ctx: GuardContext) -> GuardCheck:
         ceiling = float(self.strategy.get("vix_ceiling", 20.0))

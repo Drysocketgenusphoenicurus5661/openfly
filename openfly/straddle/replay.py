@@ -29,6 +29,7 @@ from openfly.execution.dispatch import apply_broker_events, execute_step
 from openfly.execution.types import quote_lookup_for
 from openfly.interfaces import Bar, MarketObservation, SessionWindow, Stimulus, StraddleQuote
 from openfly.straddle.engine import Action, EngineStep, StraddleEngine
+from openfly.straddle.expiry import selection_of
 from openfly.straddle.guard import GuardContext
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -281,15 +282,22 @@ def run_day(
     cost_model: Any = None,
     on_step: Callable[[int, int, dict[str, Any]], None] | None = None,
     render_png: bool = True,
+    expiry: date | None = None,
+    is_trading_day: Callable[[date], bool] | None = None,
 ) -> DayTrace:
-    """Replay one trading day. `bars` may include earlier days (they seed the trailing window)."""
+    """Replay one trading day. `bars` may include earlier days (they seed the trailing window).
+
+    `expiry` is the selected contract expiry for the day (monthly by default; the
+    quotes decide the actual contracts); `is_trading_day` is the calendar rule used
+    for trading-minute arithmetic (weekdays when None).
+    """
     day = date.fromisoformat(date_) if isinstance(date_, str) else date_
     step_minutes = interval_minutes(interval)
     window = session_window
     neural = settings.get("neural", {})
     neural_ms = float(neural.get("neural_ms", 200.0))
     model = cost_model if cost_model is not None else load_cost_model(settings)
-    eng = engine if engine is not None else StraddleEngine(settings, model)
+    eng = engine if engine is not None else StraddleEngine(settings, model, is_trading_day=is_trading_day)
     eng.start_day(window)
     builder = observation_builder or build_observation
     quotes = _QuoteSource(minute_quotes)
@@ -343,15 +351,19 @@ def run_day(
     can_render = render_png and hasattr(encoder, "render_png")
     last_neural: dict[str, Any] = {"rates_hz": {}, "fixed_decoder": {}, "stimulus_hash": None}
     last_index: float | None = completed[-1].close if completed else None
-    last_expiry: date | None = None
+    last_expiry: date | None = expiry
     obs_i = 0
     total_obs = len(obs_times)
     compute_total = 0.0
     encoder_name = getattr(encoder, "name", type(encoder).__name__)
     readout_name = getattr(readout, "name", type(readout).__name__)
 
+    premium_sources: list[str] = []
+
     def record(step: EngineStep, *, index: float | None, when: datetime, quote: StraddleQuote | None, extra: dict[str, Any], compute: float = 0.0) -> dict[str, Any]:
         i = len(steps)
+        source = premium_source(quote)
+        extra = {**extra, "premium_source": source}
         trace_step = eng.to_trace_step(
             step,
             i,
@@ -365,6 +377,9 @@ def run_day(
             compute_seconds=round(compute, 4),
             technical=extra,
         )
+        trace_step["premium_source"] = source
+        if isinstance(trace_step.get("straddle"), dict):
+            trace_step["straddle"]["premium_source"] = source
         steps.append(trace_step)
         if on_step is not None:
             on_step(obs_i, total_obs, trace_step)
@@ -393,6 +408,7 @@ def run_day(
         bar = obs_times.get(when)
         if bar is None:
             continue
+        premium_sources.append(premium_source(quote))
         completed.append(bar)
         last_index = bar.close
         trailing = tuple(completed[-trailing_bars:])
@@ -471,6 +487,7 @@ def run_day(
         "halted": eng.halt_reason or None,
         "open_at_close": eng.in_position,
         "closed": list(eng.closed),
+        **premium_summary(premium_sources, minute_quotes),
     }
     config = {
         "interval": interval,
@@ -486,8 +503,36 @@ def run_day(
         "leg_stop_mode": settings.get("strategy", {}).get("leg_stop_mode"),
         "plastic": bool(neural.get("plastic", False)),
         "broker": type(broker).__name__,
+        "expiry": (expiry or last_expiry).isoformat() if (expiry or last_expiry) else None,
+        "expiry_selection": selection_of(settings),
     }
     return DayTrace(date=day.isoformat(), steps=steps, summary=summary, config=config, stimulus_pngs=pngs)
+
+
+PREMIUM_RECORDED = "recorded"
+PREMIUM_SYNTHETIC = "synthetic"
+
+
+def premium_source(quote: Any) -> str:
+    """"recorded" when the quote came from a stored option chain, else "synthetic"."""
+    source = getattr(quote, "source", None)
+    return PREMIUM_RECORDED if source == PREMIUM_RECORDED else PREMIUM_SYNTHETIC
+
+
+def premium_summary(sources: Sequence[str], minute_quotes: Any = None) -> dict[str, Any]:
+    """premium_source ("recorded", "synthetic" or "mixed") and the fraction of synthetic minutes."""
+    fraction = getattr(minute_quotes, "synthetic_fraction", None)
+    if fraction is None:
+        n = len(sources)
+        fraction = (sum(1 for s in sources if s != PREMIUM_RECORDED) / n) if n else 1.0
+    fraction = float(fraction)
+    if fraction >= 1.0:
+        label = PREMIUM_SYNTHETIC
+    elif fraction <= 0.0:
+        label = PREMIUM_RECORDED
+    else:
+        label = "mixed"
+    return {"premium_source": label, "synthetic_fraction": round(fraction, 4)}
 
 
 def _safe_hash(component: Any) -> str | None:

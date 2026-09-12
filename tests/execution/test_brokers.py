@@ -403,3 +403,35 @@ def test_exit_that_disagrees_with_the_ledger_halts_instead_of_sending(tmp_path):
     assert rig.engine.is_halted and "do not match the ledger" in rig.engine.halt_reason
     assert rig.ledger.halted()["reason"].startswith("exit legs do not match")
     assert rig.ledger.open_legs() == {CE: -65, PE: -65}
+
+
+def test_adaptive_leg_stop_orders_carry_the_adaptive_prices(tmp_path):
+    from openfly.execution.types import ceil_to_tick
+
+    rig = Rig(tmp_path, strategy__stop_mode="adaptive")
+    step = rig.observe(at(10, 20), Decision.ENTER)
+    assert step.action == Action.ENTER.value
+    import math
+
+    basis = rig.engine.position.basis
+    assert basis.mode == "adaptive" and basis.realized_move_points is None  # the rig observation has 3 bars
+    assert basis.minutes_to_expiry == 1060  # 310 minutes left today plus two sessions to the 15-SEP-26 weekly expiry
+    implied = 201.3 * math.sqrt(60 / 1060)
+    gamma = 0.32 / 201.3
+    rise = 0.5 * implied + 0.5 * gamma * implied * implied
+    assert basis.leg_stop_pct["ce"] == pytest.approx(1.25 * rise / 101.2 * 100, rel=1e-6)
+    assert basis.leg_stop_pct["pe"] == pytest.approx(1.25 * rise / 100.1 * 100, rel=1e-6)
+    assert basis.clipped == {"ce": "", "pe": "", "combined": "min"}
+    legs = {leg.option_type: leg for leg in rig.engine.position.legs.values()}
+    assert legs["CE"].stop_price == ceil_to_tick(101.2 * (1 + basis.leg_stop_pct["ce"] / 100))
+    assert legs["PE"].stop_price == ceil_to_tick(100.1 * (1 + basis.leg_stop_pct["pe"] / 100))
+    placed = [(o["symbol"], o["pricetype"], o["trigger_price"]) for o in rig.exchange.calls_of("placeorder")]
+    assert placed == [(CE, "SL-M", legs["CE"].stop_price), (PE, "SL-M", legs["PE"].stop_price)]
+    records = {r["symbol"]: r["trigger_price"] for r in rig.ledger.stop_orders(active_only=True)}
+    assert records == {CE: legs["CE"].stop_price, PE: legs["PE"].stop_price}
+    snap = rig.engine.state_snapshot()
+    assert snap["stop_basis"]["leg_stop_pct"] == {"ce": round(basis.leg_stop_pct["ce"], 2), "pe": round(basis.leg_stop_pct["pe"], 2)}
+    assert snap["stop_basis"]["combined_stop_pct"] == 10.0 and snap["stop_level"] == round(201.3 * 1.10, 2)
+    intents = {r["kind"]: r for r in rig.ledger.intents()}
+    assert intents["STOPS"]["reason"] == f"per-leg adaptive stops: ce {basis.leg_stop_pct['ce']:.1f} percent, pe {basis.leg_stop_pct['pe']:.1f} percent"
+

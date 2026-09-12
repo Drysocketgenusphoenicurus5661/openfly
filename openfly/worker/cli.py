@@ -157,18 +157,14 @@ def run_replay_day_command(args: argparse.Namespace) -> int:
         load_bars,
         load_brain,
         load_encoder,
+        load_is_trading_day,
         load_minute_quotes,
         load_readout,
         load_session_window,
         load_vix,
+        select_replay_expiry,
     )
-    from openfly.worker.stubs import (
-        FixedTimeReadout,
-        NullBrain,
-        NullEncoder,
-        next_weekly_expiry,
-        simple_minute_quotes,
-    )
+    from openfly.worker.stubs import FixedTimeReadout, NullBrain, NullEncoder, simple_minute_quotes
 
     PATHS.ensure()
     store = SettingsStore()
@@ -183,14 +179,17 @@ def run_replay_day_command(args: argparse.Namespace) -> int:
     print(f"bars: {bars_note} ({len(bars)} bars)", flush=True)
     vix, vix_note = load_vix(day, settings)
     print(f"vix: {vix:.2f} ({vix_note})", flush=True)
+    expiry, expiry_note = select_replay_expiry(day, settings)
+    print(f"expiry: {expiry.isoformat()} ({settings['strategy'].get('expiry_selection', 'monthly')}, {expiry_note})", flush=True)
+    is_trading_day = load_is_trading_day(settings)
     if args.stand_ins:
-        quotes, quotes_note = simple_minute_quotes(day, bars, vix, next_weekly_expiry(day)), "simple_minute_quotes (stand-in)"
+        quotes, quotes_note = simple_minute_quotes(day, bars, vix, expiry), "simple_minute_quotes (stand-in)"
         brain, brain_note = NullBrain(), "NullBrain (stand-in)"
         encoder, enc_note = NullEncoder(), "NullEncoder (stand-in)"
         readout, rd_note = FixedTimeReadout.from_settings(settings), "FixedTimeReadout (stand-in)"
         print(f"quotes: {quotes_note}\nbrain: {brain_note}\nencoder: {enc_note}\nreadout: {rd_note}", flush=True)
     else:
-        quotes, quotes_note = load_minute_quotes(day, bars, vix, settings)
+        quotes, quotes_note = load_minute_quotes(day, bars, vix, settings, expiry=expiry)
         print(f"quotes: {quotes_note}", flush=True)
         print("loading the brain (the real connectome takes a while; use --stand-ins for a quick run)", flush=True)
         brain, brain_note = load_brain(settings)
@@ -214,8 +213,10 @@ def run_replay_day_command(args: argparse.Namespace) -> int:
         interval=args.interval,
         vix=vix,
         render_png=not args.no_png,
+        expiry=expiry,
+        is_trading_day=is_trading_day,
     )
-    trace.config.update({"bars": bars_note, "quotes": quotes_note, "brain": brain_note, "session": window_note})
+    trace.config.update({"bars": bars_note, "quotes": quotes_note, "brain": brain_note, "session": window_note, "expiry_source": expiry_note})
     out = Path(args.out) if args.out else PATHS.replays / f"rp_{day.strftime('%Y%m%d')}_{datetime.now(IST).strftime('%H%M%S')}"
     path = trace.save(out)
     s = trace.summary
