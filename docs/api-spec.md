@@ -136,7 +136,8 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
 ```json
 {"strategy": {"underlying": "NIFTY", "expiry_selection": "monthly", "lot_size": 65, "lots": 1, "product": "NRML",
               "stop_mode": "adaptive", "stop_horizon_minutes": 60, "stop_buffer": 1.25,
-              "leg_stop_min_pct": 15, "leg_stop_max_pct": 80, "combined_stop_min_pct": 10, "combined_stop_max_pct": 50,
+              "leg_stop_min_pct": 15, "leg_stop_max_pct": 80, "combined_stop_min_pct": 3, "combined_stop_max_pct": 50,
+              "target_mode": "adaptive", "target_ratio": 1.0, "target_min_pct": 2, "target_max_pct": 40, "lock_ratio": 0.5,
               "leg_stop_pct": 30, "leg_stop_mode": "broker", "on_leg_stop": "hold_other",
               "combined_stop_enabled": true, "stop_pct": 25, "target_pct": 40, "lock_after_pct": 15, "trade_start": "09:20", "last_entry": "14:30", "square_off": "15:15",
               "max_entries_per_day": 10, "min_hold_minutes": 10, "reentry_cooldown_minutes": 5, "vix_ceiling": 20, "min_days_to_expiry": 0},
@@ -260,3 +261,23 @@ The straddle payload gains `stop_basis`: `{"mode": "adaptive", "horizon_minutes"
 narrative states the expected move and the resulting stop levels. Each new
 straddle recomputes its stops from the then-current volatility. `stop_mode`
 `fixed` uses `leg_stop_pct` and `stop_pct` as before. Stops are never trailed.
+
+## Adaptive target and lock
+
+With `target_mode` `adaptive` (default) the take-profit is sized from the
+same expected move as the stops: target percent = `target_ratio` x the
+adaptive combined stop percent, clipped to [`target_min_pct`,
+`target_max_pct`]; the breakeven lock arms once the premium has fallen
+`lock_ratio` x the target percent. `stop_basis` gains `target_pct` and
+`lock_after_pct`. `target_mode` `fixed` uses `target_pct` and
+`lock_after_pct` as before. The combined stop floor is 3 percent by default
+so that monthly contracts, whose premium moves a few percent a day, get
+reachable levels.
+
+## Brain state history
+
+`GET /api/brain/state` also returns `stimulus_png` (a URL, the replay step
+image when the source is a replay, else `/api/brain/stimulus.png`),
+`source` (`worker` or `replay`), `replay_id`, `step` and `history`: the last
+30 observations as `[{"t": "...", "rates_hz": {...}, "action": "..."}]` so the
+Brain page can draw the heatmap on load.
