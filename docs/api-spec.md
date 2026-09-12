@@ -134,7 +134,7 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
 ## GET /api/settings and PUT /api/settings
 
 ```json
-{"strategy": {"underlying": "NIFTY", "lot_size": 65, "lots": 1, "product": "NRML",
+{"strategy": {"underlying": "NIFTY", "expiry_selection": "monthly", "lot_size": 65, "lots": 1, "product": "NRML",
               "stop_mode": "adaptive", "stop_horizon_minutes": 60, "stop_buffer": 1.25,
               "leg_stop_min_pct": 15, "leg_stop_max_pct": 80, "combined_stop_min_pct": 10, "combined_stop_max_pct": 50,
               "leg_stop_pct": 30, "leg_stop_mode": "broker", "on_leg_stop": "hold_other",

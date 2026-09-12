@@ -106,6 +106,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "lots": 1,
         "product": "NRML",
         "strategy_tag": "openfly",
+        # "monthly" trades the last expiry of the current calendar month; "weekly" the nearest.
+        "expiry_selection": "monthly",
+        "weekly_backfill_days": 7,
+        "monthly_backfill_days": 90,
         # Stops are volatility adaptive by default: computed at each entry from the
         # expected index move over stop_horizon_minutes (the larger of what the straddle
         # itself prices for that horizon and the recent realized move), translated into a
