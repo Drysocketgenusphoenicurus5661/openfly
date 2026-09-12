@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from openfly.config import PATHS, Paths, history_path
-from openfly.experiments.sessions import IST, TradingCalendar
+from openfly.experiments.sessions import DEFAULT_EXPIRY_SELECTION, IST, TradingCalendar
 from openfly.interfaces import Bar
 
 BAR_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume", "oi")
@@ -229,6 +229,7 @@ class MarketData:
         paths: Paths = PATHS,
         frame_1m: pd.DataFrame | None = None,
         vix_daily: pd.DataFrame | None = None,
+        expiry_selection: str = DEFAULT_EXPIRY_SELECTION,
     ):
         self.paths = paths
         self.index_exchange = index_exchange
@@ -247,7 +248,7 @@ class MarketData:
         dates = self.index_1m["timestamp"].dt.date.to_numpy()
         self._dates_per_row = dates
         self.dates: list[date] = sorted(set(dates.tolist()))
-        self.calendar = TradingCalendar(self.dates)
+        self.calendar = TradingCalendar(self.dates, selection=expiry_selection)
         starts = np.searchsorted(dates, np.array(self.dates), side="left")
         ends = np.searchsorted(dates, np.array(self.dates), side="right")
         self._bounds = {d: (int(s), int(e)) for d, s, e in zip(self.dates, starts, ends, strict=False)}
@@ -355,5 +356,7 @@ class MarketData:
         return bars
 
 
-def load_market(store=None, paths: Paths = PATHS) -> MarketData:
-    return MarketData(store=store, paths=paths)
+def load_market(store=None, paths: Paths = PATHS, settings: dict | None = None) -> MarketData:
+    from openfly.experiments.sessions import expiry_selection
+
+    return MarketData(store=store, paths=paths, expiry_selection=expiry_selection(settings))

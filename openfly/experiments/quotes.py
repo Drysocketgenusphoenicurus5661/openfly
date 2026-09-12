@@ -24,7 +24,13 @@ import pandas as pd
 from openfly.config import PATHS, Paths
 from openfly.experiments.data import DayView, MarketData, MissingData, _bar_store, option_symbol
 from openfly.experiments.pricer import StraddlePricer, round_tick
-from openfly.experiments.sessions import IST, SESSION_MINUTES, TradingCalendar, session_open
+from openfly.experiments.sessions import (
+    IST,
+    SESSION_MINUTES,
+    TradingCalendar,
+    expiry_selection,
+    session_open,
+)
 from openfly.interfaces import Quote, StraddleQuote
 
 RECORDED = "recorded"
@@ -111,8 +117,13 @@ class MinuteQuotes:
         exchange: str = "NFO",
         tick: float = 0.05,
         spread: float = 0.05,
+        prior_closes: np.ndarray | None = None,
     ):
         self.day = day
+        # Closes of the previous session (tail), so trailing return windows at the open have history.
+        self.prior_closes = (
+            np.ascontiguousarray(prior_closes, dtype=np.float64) if prior_closes is not None and len(prior_closes) else None
+        )
         self.date = day.date
         self.expiry = expiry
         self.pricer = pricer
@@ -155,6 +166,13 @@ class MinuteQuotes:
         return float(self.atm_strikes[self.row_for(ts)])
 
     # -- paths ---------------------------------------------------------------
+
+    def trailing_closes(self, row: int, n: int = 61) -> np.ndarray:
+        """The last `n` one-minute closes up to and including `row`, reaching into the previous session."""
+        closes = self.day.close[: row + 1]
+        if closes.size < n and self.prior_closes is not None:
+            closes = np.concatenate([self.prior_closes, closes])
+        return closes[-n:]
 
     def synthetic_path(self, strike: float, option_type: str) -> np.ndarray:
         key = (float(strike), option_type)
@@ -303,6 +321,8 @@ def minute_quotes_for(
         raise MissingData(f"no index bars for {trading_date}")
     calendar = calendar or market.calendar
     strategy = (settings or {}).get("strategy", {}) if isinstance(settings, dict) else {}
+    if expiry is None:
+        expiry = calendar.select_expiry(trading_date, expiry_selection(settings, default=calendar.selection))
     pricer = pricer or StraddlePricer(
         strike_step=float(strategy.get("strike_step", 50)), calendar=calendar, paths=paths
     )
@@ -311,16 +331,15 @@ def minute_quotes_for(
     vix = market.vix_open(trading_date)
     recorded = None
     if prefer_recorded:
+        # Only the selected contract's chain is used; another expiry's prints never stand in for it.
         st = store if store is not None else (market.store if market.store is not None else _bar_store(paths))
         chain = _chain_for(st, trading_date, expiry)
         if chain is not None and len(chain):
-            if expiry is None and "expiry" in pd.DataFrame(chain).columns:
-                exps = sorted({e for e in pd.to_datetime(pd.DataFrame(chain)["expiry"]).dt.date if e >= trading_date})
-                if exps:
-                    expiry = exps[0]
-            recorded = _recorded_legs(chain, day, expiry or calendar.next_expiry(trading_date))
-    if expiry is None:
-        expiry = calendar.next_expiry(trading_date)
+            recorded = _recorded_legs(chain, day, expiry)
+    prior = None
+    earlier = [d for d in market.dates if d < trading_date]
+    if earlier:
+        prior = market.day_view(earlier[-1]).close[-60:]
     return MinuteQuotes(
         day,
         expiry,
@@ -330,6 +349,7 @@ def minute_quotes_for(
         recorded=recorded or None,
         underlying=underlying,
         exchange=str(strategy.get("options_exchange", "NFO")),
+        prior_closes=prior,
     )
 
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useBackendStore } from './backend'
 import { api } from './client'
-import { useModeStore } from './mode'
 import type { ExperimentConfig, ReplayRunBody, SettingsPatch, WorkerStartBody } from './types'
 
 export const queryKeys = {
@@ -24,7 +24,7 @@ export const queryKeys = {
 }
 
 function useResolved() {
-  return useModeStore((s) => s.resolved)
+  return useBackendStore((s) => s.state === 'up')
 }
 
 export function useStatus(refetchInterval = 5000) {

@@ -42,6 +42,16 @@ def test_smoke_run_writes_valid_result(tmp_path):
     assert isinstance(written["passed"], bool) and isinstance(written["verdict"], str)
     assert written["selection"]["populations"] and written["selection"]["alpha"] in written["config"]["alphas"]
     assert (runner.dir / "readout" / "readout.npz").exists() and (runner.dir / "trades.json").exists()
+    trades = json.loads((runner.dir / "trades.json").read_text(encoding="utf-8"))
+    fixed_trades = trades["test"]["fixed_0920"]
+    assert fixed_trades and all(t["stop_basis"]["mode"] == "adaptive" for t in fixed_trades)
+    assert all(t["expiry"] == "2026-07-28" for t in fixed_trades)  # July 2026 monthly contract
+    assert written["config"]["expiry_selection"] == "monthly"
+    assert written["provenance"]["expiries"]["test"] == ["2026-07-28"]
+    assert all(15.0 <= t["leg_stop_pct_ce"] <= 80.0 and 10.0 <= t["combined_stop_pct"] <= 50.0 for t in fixed_trades)
+    for m in written["controls"].values():
+        assert "mean_leg_stop_pct" in m and "mean_combined_stop_pct" in m
+    assert written["controls"]["fixed_0920"]["mean_leg_stop_pct"] is not None
     assert written["provenance"]["fake_brain"] is True
 
     listed = list_experiments(paths)

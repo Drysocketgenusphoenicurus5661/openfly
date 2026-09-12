@@ -50,6 +50,29 @@ module and the file exist, otherwise from the parquet files under
 `data/history`. Nothing fetches from the broker: a date that is not stored
 raises `MissingData`. `resample(df1m, "5m")` aggregates aligned to 09:15.
 
+## Expiry selection
+
+`settings.strategy.expiry_selection` is `monthly` by default: the strategy
+trades the current-month contract, the last Tuesday of the calendar month
+(last Thursday before September 2025), shifted back to the previous session
+when that day is a holiday known to the calendar (2026-03-31 was one, so the
+March 2026 contract expired on 2026-03-30). Once the monthly expiry has
+passed the next month's contract is used, including on the expiry day
+itself (0 DTE). `weekly` selects the next expiry weekday as before.
+`TradingCalendar.monthly_expiry(d)`, `next_expiry(d)` and
+`select_expiry(d, selection)` implement this; a calendar carries the
+default selection so `days_to_expiry(ts)` needs no expiry. The selection
+flows into the observation builder (days to expiry, premium), the quotes
+(which expiry's recorded chain may stand in for the synthetic model), the
+targets (implied move scaled by trading minutes to the selected expiry), the
+reward series, the simulator (every trade records `expiry`) and the runner
+(`config.expiry_selection`, `provenance.expiries` per window). The CLI takes
+`--expiry monthly|weekly` on `experiment run` and `calibrate-pricer`.
+
+A monthly straddle carries a much larger premium and a smaller gamma than a
+weekly one, so for the same expected move the leg stop percentages come out
+lower (the same point rise is a smaller fraction of a bigger leg price).
+
 ## Pricer
 
 `openfly.experiments.pricer.StraddlePricer(factor=None)`: Black-Scholes
@@ -59,14 +82,18 @@ the fraction of the current session, over 252 sessions a year). Weekly
 expiry is Tuesday from 2025-09-01 (Thursday before); a holiday on the expiry
 weekday moves it to the previous session when the calendar knows the dates.
 
-`calibrate()` fits the factor on every listed contract in the cache
-(rows within 1 percent moneyness, volume above zero) and writes
-`data/features/calibration.json`; the pricer reads that file by default.
-With the one listed contract (NIFTY15SEP2623400CE, 2026-09-08 to 09-11) the
-factor is 1.006: VIX with trading-time day count reproduces the recorded
-prices with a 16 point RMSE. At the Friday 2026-09-11 close (2.0 sessions to
-expiry, which is the 3.4 calendar days quoted in the market facts) the model
-gives 205.6 points for the 23400 straddle against the recorded 204.0.
+`calibrate(selection=None, settings=None)` fits the factor on the recorded
+option chains in the market store (`BarStore.chain(date, expiry)` for every
+stored trading date and expiry) plus any parquet option files under
+data/history: rows within 1 percent moneyness with volume above zero, only
+contracts whose expiry matches the strategy's selection (monthly by
+default; when none are recorded yet every contract is used and the result
+says so). It writes `data/features/calibration.json` with the factor, the
+selection, per-day and per-expiry diagnostics (each expiry's own best
+factor); the pricer reads that file by default. Fitted on the weekly
+contracts alone the factor is 1.006 (205.6 points for the 23400 weekly
+straddle at the Friday 2026-09-11 close against 204.0 recorded); the monthly
+figure is reported by `openfly calibrate-pricer`.
 
 ## Minute quotes (for the straddle replay and the worker)
 
@@ -128,17 +155,49 @@ DNpe017). A pass warms the brain with one discarded observation at 09:15
 per day, runs every observation of the day, writes the day, and skips days
 already present, so it resumes after an interruption.
 
+## Volatility-adaptive stops
+
+`settings.strategy.stop_mode` is `adaptive` by default. At every straddle
+entry (strategy, fixed 09:20 control, random-entry control and the forward
+P&L in the targets alike) the simulator computes, from the minute's prices:
+
+    implied  = combined premium x sqrt(stop_horizon_minutes / trading minutes to expiry)
+    realized = std(trailing 60 one-minute log returns) x sqrt(stop_horizon_minutes) x index
+    m        = max(implied, realized)
+    leg rise      = |delta| x m + 0.5 x gamma x m^2           (Black-Scholes delta and gamma from the pricer)
+    combined rise = 0.5 x (gamma_ce + gamma_pe) x m^2 + |delta_ce + delta_pe| x m
+    leg_stop_pct      = clip(stop_buffer x leg rise / leg price x 100, leg_stop_min_pct, leg_stop_max_pct)
+    combined_stop_pct = clip(stop_buffer x combined rise / combined x 100, combined_stop_min_pct, combined_stop_max_pct)
+
+The percentages are held for the life of that straddle and recomputed for
+the next one; nothing is trailed. The trailing return window reaches into
+the previous session (`MinuteQuotes.prior_closes`) so an entry at 09:20 has
+a full 60 returns. `stop_mode` `fixed` uses `leg_stop_pct` and `stop_pct`.
+Every trade in `trades.json` carries `stop_basis` (mode, horizon_minutes,
+expected_move_points, implied_move_points, realized_move_points, delta_ce,
+delta_pe, gamma, rise_points, leg_stop_pct {ce, pe}, combined_stop_pct) and
+the metrics per window report `mean_leg_stop_pct`, `mean_combined_stop_pct`
+and `mean_expected_move_points`.
+
+Observed on the NIFTY history: at the 09:20 open the realized move dominates
+and leg stops widen to 60 to 70 percent; mid-day they settle near 25
+percent. The combined rise of an ATM straddle is small (its net delta is
+near zero, so only gamma x m^2 remains), which puts the combined stop at the
+10 percent floor for nearly every entry; raise `combined_stop_min_pct` or
+`stop_buffer` if a looser combined stop is wanted.
+
 ## Simulator rules
 
 From `settings.strategy`: entries at observation rows between trade_start
 (09:20) and last_entry (14:30), one straddle at a time at the ATM strike of
 that minute (dynamic re-strike), re-entry after `reentry_cooldown_minutes`,
 at most `max_entries_per_day` straddles (0 unlimited). Exits, evaluated per
-minute on per-leg closes: per-leg fixed stop at `leg_stop_pct`, then either
-both legs out (`on_leg_stop = exit_both`) or the other leg runs on with its
-own stop, its target, a readout EXIT or the square-off (`hold_other`);
-combined stop (`combined_stop_enabled`), target and lock on the summed
-premium; readout EXIT; square-off at 15:15. Legs are sold at ltp - 0.05 and
+minute on per-leg closes: per-leg stop (adaptive or `leg_stop_pct`), then
+either both legs out (`on_leg_stop = exit_both`) or the other leg runs on
+with its own stop, its target, a readout EXIT or the square-off
+(`hold_other`); combined stop (`combined_stop_enabled`, adaptive or
+`stop_pct`), target and lock on the summed premium; readout EXIT; square-off
+at 15:15. Legs are sold at ltp - 0.05 and
 bought at ltp + 0.05; costs follow `openfly.experiments.costs.round_trip_cost`
 (brokerage, STT, exchange, SEBI, stamp, GST).
 
@@ -160,7 +219,8 @@ curves with cumulative daily P&L per series, passed, verdict, provenance),
 Metrics per window: net_pnl_per_lot, gross_pnl_per_lot, costs_per_lot,
 sharpe (daily, sqrt 252), max_drawdown, trades, stop_hits, stop_hits_leg,
 target_hits, lock_hits, exit_hits, square_offs, win_rate,
-avg_holding_minutes, accuracy with a 95 percent block bootstrap interval
+avg_holding_minutes, mean_leg_stop_pct, mean_combined_stop_pct,
+mean_expected_move_points, accuracy with a 95 percent block bootstrap interval
 (blocks of 5 days) and p-value, base_rate_above_1, balanced_accuracy,
 ridge_accuracy, synthetic_fraction, n_observations.
 

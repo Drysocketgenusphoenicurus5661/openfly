@@ -94,11 +94,14 @@ def cmd_experiment_run(args) -> int:
         "horizon_minutes": args.horizon,
         "seed": args.seed,
         "fake_brain": bool(args.fake_brain),
+        "expiry_selection": args.expiry,
     }
     if args.name:
         config["name"] = args.name
     factory = fake_brain_factory(args.seed) if args.fake_brain else real_brain_factory(settings, bool(args.plastic))
-    runner = ExperimentRunner(config, factory, settings, progress=_print_progress)
+    runner = ExperimentRunner(
+        config, factory, settings, progress=_print_progress, experiment_id=getattr(args, "id", None) or None
+    )
     print(f"experiment {runner.id} -> {runner.dir}")
     try:
         result = runner.run()
@@ -126,7 +129,10 @@ def _print_summary(result: dict) -> None:
     sel = result.get("selection", {})
     if sel.get("populations"):
         print(f"selected: populations {sel['populations']} alpha {sel['alpha']} tau {sel['tau']} features {sel.get('features')}")
-    header = f"{'window':<11}{'net/lot':>10}{'sharpe':>8}{'maxdd':>10}{'trades':>7}{'stop':>5}{'leg':>5}{'tgt':>5}{'acc':>7}{'ci':>16}{'p':>7}{'synth':>7}"
+    header = (
+        f"{'window':<11}{'net/lot':>10}{'sharpe':>8}{'maxdd':>10}{'trades':>7}{'stop':>5}{'leg':>5}{'tgt':>5}"
+        f"{'legstop%':>9}{'cstop%':>7}{'acc':>7}{'ci':>16}{'p':>7}{'synth':>7}"
+    )
     print(header)
     for w, m in result.get("metrics", {}).items():
         ci = m.get("accuracy_ci")
@@ -134,6 +140,7 @@ def _print_summary(result: dict) -> None:
         print(
             f"{w:<11}{_fmt(m.get('net_pnl_per_lot'), 0):>10}{_fmt(m.get('sharpe'), 2):>8}{_fmt(m.get('max_drawdown'), 0):>10}"
             f"{m.get('trades', 0):>7}{m.get('stop_hits', 0):>5}{m.get('stop_hits_leg', 0):>5}{m.get('target_hits', 0):>5}"
+            f"{_fmt(m.get('mean_leg_stop_pct'), 1):>9}{_fmt(m.get('mean_combined_stop_pct'), 1):>7}"
             f"{_fmt(m.get('accuracy'), 3):>7}{ci_txt:>16}{_fmt(m.get('accuracy_p_value'), 3):>7}{_fmt(m.get('synthetic_fraction'), 2):>7}"
         )
     print("controls (test window):")
@@ -141,7 +148,8 @@ def _print_summary(result: dict) -> None:
         print(
             f"  {name:<13}net/lot {_fmt(m.get('net_pnl_per_lot'), 0):>8}  sharpe {_fmt(m.get('sharpe'), 2):>6}  "
             f"trades {m.get('trades', 0):>4}  stop {m.get('stop_hits', 0):>3}  leg {m.get('stop_hits_leg', 0):>3}  "
-            f"tgt {m.get('target_hits', 0):>3}  acc {_fmt(m.get('accuracy'), 3)}"
+            f"tgt {m.get('target_hits', 0):>3}  legstop% {_fmt(m.get('mean_leg_stop_pct'), 1)}  "
+            f"cstop% {_fmt(m.get('mean_combined_stop_pct'), 1)}  acc {_fmt(m.get('accuracy'), 3)}"
         )
     print(f"passed: {result.get('passed')}")
     print(f"verdict: {result.get('verdict')}")
@@ -181,15 +189,21 @@ def cmd_experiment_show(args) -> int:
 def cmd_calibrate_pricer(args) -> int:
     from openfly.experiments.pricer import calibrate
 
-    _settings()
+    settings = _settings()
     try:
-        result = calibrate(moneyness_pct=args.moneyness, write=not args.dry_run)
+        result = calibrate(moneyness_pct=args.moneyness, write=not args.dry_run, selection=args.expiry, settings=settings)
     except Exception as exc:
         print(f"calibration failed: {exc}", file=sys.stderr)
         return 1
-    print(f"factor: {result['factor']:.4f}")
-    print(f"contracts: {', '.join(result['contracts'])}")
+    print(f"factor: {result['factor']:.4f}  (expiry selection: {result['selection']})")
+    print(f"expiries: {', '.join(result['expiries'])}; contracts: {len(result['contracts'])}")
     print(f"rows: {result['rows']} (moneyness within {result['moneyness_pct']} percent)")
+    for e in result.get("per_expiry", []):
+        tag = "selected" if e["selected"] else "other"
+        print(
+            f"  expiry {e['expiry']} ({tag}): rows {e['rows']:>5}  own factor {e['own_factor']:.4f}"
+            f"  rmse at factor {e['rmse_points_at_factor']:.2f}  recorded mean {e['recorded_mean']:.1f}"
+        )
     print(f"rmse: {result['rmse_points']:.2f} points, mean abs error {result['mean_abs_pct_error']:.2f} percent")
     for d in result["per_day"]:
         print(
@@ -216,9 +230,11 @@ def register_cli(subparsers) -> None:
     run.add_argument("--interval", default=None, help="observation interval, 1m (default) or 5m")
     run.add_argument("--horizon", type=int, default=None, help="horizon in minutes (default from settings)")
     run.add_argument("--plastic", action="store_true")
+    run.add_argument("--expiry", default=None, help="monthly or weekly (default: settings.strategy.expiry_selection)")
     run.add_argument("--fake-brain", action="store_true", help="use the deterministic FakeBrain")
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--name", default=None)
+    run.add_argument("--id", default=None, help="experiment id (default: generated from the time and config)")
     run.set_defaults(handler=cmd_experiment_run)
 
     ls = sub.add_parser("list", help="list experiments")
@@ -232,4 +248,5 @@ def register_cli(subparsers) -> None:
     cal = subparsers.add_parser("calibrate-pricer", help="fit the synthetic straddle IV factor to listed contracts")
     cal.add_argument("--moneyness", type=float, default=1.0, help="max |spot - strike| in percent of spot")
     cal.add_argument("--dry-run", action="store_true", help="do not write calibration.json")
+    cal.add_argument("--expiry", default=None, help="monthly or weekly (default: settings.strategy.expiry_selection)")
     cal.set_defaults(handler=cmd_calibrate_pricer)

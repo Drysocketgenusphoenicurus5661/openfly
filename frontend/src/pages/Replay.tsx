@@ -11,6 +11,7 @@ import {
   useSettings,
 } from '@/api/hooks'
 import type { Bar, Encoder, Readout, ReplayRunBody, ReplayStep } from '@/api/types'
+import { ChartLegendRow } from '@/components/charts/ChartLegendRow'
 import { PriceChart } from '@/components/charts/PriceChart'
 import { EmptyState, LoadingState } from '@/components/common/EmptyState'
 import { PageHeader } from '@/components/common/PageHeader'
@@ -286,6 +287,14 @@ export default function ReplayPage() {
                   .
                 </div>
               )}
+              <ChartLegendRow
+                symbol="NIFTY"
+                exchange="NSE_INDEX"
+                interval="1m"
+                strike={step?.straddle.strike ?? null}
+                premiumSource={step?.premium_source ?? step?.straddle.premium_source ?? null}
+                note={steps.length ? 'candles built from the step index closes' : undefined}
+              />
               <PriceChart
                 bars={bars}
                 premium={premium}

@@ -71,6 +71,8 @@ function compose(events: ServerEvent[]): ReplayStep | null {
       target_level: (s.target_level as number | null) ?? null,
       pnl: (s.pnl as number | null) ?? null,
       legs: (s.legs as ReplayStep['straddle']['legs']) ?? null,
+      stop_basis: (s.stop_basis as ReplayStep['stop_basis']) ?? null,
+      premium_source: (s.premium_source as ReplayStep['premium_source']) ?? null,
     },
     fills: Array.isArray(o.fills) ? (o.fills as ReplayStep['fills']) : [],
     pnl_day: typeof o.pnl_day === 'number' ? o.pnl_day : Number(s.pnl ?? 0),
@@ -80,6 +82,8 @@ function compose(events: ServerEvent[]): ReplayStep | null {
         ? o.narrative
         : 'The worker has not written a narrative for this observation yet.',
     technical: isRecord(o.technical) ? (o.technical as ReplayStep['technical']) : {},
+    stop_basis: (o.stop_basis as ReplayStep['stop_basis']) ?? null,
+    premium_source: (o.premium_source as ReplayStep['premium_source']) ?? null,
   }
 }
 

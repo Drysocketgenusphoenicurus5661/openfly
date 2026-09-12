@@ -25,6 +25,7 @@ from openfly.experiments.sessions import (
     IST,
     SESSION_MINUTES,
     TradingCalendar,
+    expiry_selection,
     years_to_expiry,
 )
 
@@ -68,6 +69,32 @@ def bs_prices(S, K, T_years, sigma):
     return call.reshape(shape), put.reshape(shape)
 
 
+def bs_greeks(S, K, T_years, sigma):
+    """Black-Scholes (rate 0) call delta, put delta and gamma, vectorized.
+
+    Degenerate inputs (no time or no volatility) give the intrinsic deltas
+    (1 or 0 for the call, 0.5 at the money) and zero gamma.
+    """
+    S = np.asarray(S, dtype=np.float64)
+    K = np.asarray(K, dtype=np.float64)
+    T = np.asarray(T_years, dtype=np.float64)
+    sig = np.asarray(sigma, dtype=np.float64)
+    S, K, T, sig = np.broadcast_arrays(S, K, T, sig)
+    shape = S.shape
+    S, K, T, sig = (np.ravel(a).astype(np.float64) for a in (S, K, T, sig))
+    delta_call = np.where(S > K, 1.0, np.where(S < K, 0.0, 0.5))
+    gamma = np.zeros_like(S)
+    ok = (T > 0) & (sig > 0) & (S > 0) & (K > 0)
+    if np.any(ok):
+        s, k, t, v = S[ok], K[ok], T[ok], sig[ok]
+        vs = v * np.sqrt(t)
+        d1 = (np.log(s / k) + 0.5 * vs * vs) / vs
+        delta_call[ok] = ndtr(d1)
+        gamma[ok] = np.exp(-0.5 * d1 * d1) / np.sqrt(2.0 * np.pi) / (s * vs)
+    delta_put = delta_call - 1.0
+    return delta_call.reshape(shape), delta_put.reshape(shape), gamma.reshape(shape)
+
+
 def round_tick(x, tick: float = 0.05):
     return np.round(np.asarray(x, dtype=np.float64) / tick) * tick
 
@@ -108,6 +135,13 @@ class StraddlePricer:
     def straddle(self, S, K, days_to_expiry, vix):
         c, p = self.legs(S, K, days_to_expiry, vix)
         return c + p
+
+    def greeks(self, S, K, days_to_expiry, vix) -> dict:
+        """delta_ce, delta_pe and gamma (per point of index, same for both legs) at one point."""
+        days = np.asarray(days_to_expiry, dtype=np.float64)
+        T = np.maximum(days * SESSION_MINUTES, 1.0) / (SESSION_MINUTES * 252.0)
+        dc, dp, g = bs_greeks(S, K, T, self.iv(vix))
+        return {"delta_ce": float(dc), "delta_pe": float(dp), "gamma": float(g)}
 
     def atm_premium(self, S, days_to_expiry, vix):
         return self.straddle(S, self.atm_strike(S), days_to_expiry, vix)
@@ -159,6 +193,53 @@ def _calibration_rows(market, store, symbols: list[str], moneyness_pct: float) -
     return pd.concat(frames, ignore_index=True)
 
 
+def _chain_calibration_rows(market, store, moneyness_pct: float) -> pd.DataFrame:
+    """Rows from the recorded option chains in the store (every stored trading date and expiry)."""
+    if store is None or not callable(getattr(store, "chain", None)):
+        return pd.DataFrame()
+    try:
+        coverage = store.chain_coverage()
+    except Exception:
+        return pd.DataFrame()
+    index = market.index_1m[["timestamp", "close"]].rename(columns={"close": "spot"})
+    frames = []
+    for entry in coverage or []:
+        try:
+            d = date.fromisoformat(str(entry["trading_date"]))
+            expiry = date.fromisoformat(str(entry["expiry"]))
+            chain = store.chain(d, expiry)
+        except Exception:
+            continue
+        if chain is None or len(chain) == 0:
+            continue
+        f = pd.DataFrame(chain)
+        if "timestamp" not in f.columns and "ts" in f.columns:
+            f = f.rename(columns={"ts": "timestamp"})
+        f["timestamp"] = pd.to_datetime(f["timestamp"])
+        f["timestamp"] = f["timestamp"].dt.tz_convert(IST) if f["timestamp"].dt.tz is not None else f["timestamp"].dt.tz_localize(IST)
+        f = f[["timestamp", "symbol", "strike", "option_type", "close", "volume"]].merge(index, on="timestamp", how="inner")
+        if len(f) == 0:
+            continue
+        if (f["volume"] > 0).any():
+            f = f[f["volume"] > 0]
+        minute = (f["timestamp"].dt.hour * 60 + f["timestamp"].dt.minute) - (9 * 60 + 15)
+        f = f[(minute >= 0) & (minute < SESSION_MINUTES)]
+        f = f[(np.abs(f["spot"] - f["strike"]) / f["spot"] * 100.0) <= moneyness_pct]
+        if len(f) == 0:
+            continue
+        f = f.copy()
+        f["strike"] = f["strike"].astype(float)
+        f["option_type"] = f["option_type"].astype(str)
+        f["expiry"] = expiry
+        f["vix"] = market.vix_open(d)
+        close_ts = f["timestamp"] + pd.Timedelta(minutes=1)
+        f["days"] = [market.calendar.days_to_expiry(t.to_pydatetime(), expiry) for t in close_ts]
+        frames.append(f)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def calibrate(
     cache=None,
     *,
@@ -167,11 +248,17 @@ def calibrate(
     write: bool = True,
     path: str | Path | None = None,
     paths: Paths = PATHS,
+    selection: str | None = None,
+    settings: dict | None = None,
 ) -> dict:
-    """Fit the IV factor so synthetic prices match the recorded listed contracts.
+    """Fit the IV factor so synthetic prices match the recorded contracts.
 
-    `cache` may be None, a MarketData, or a store with `bars(...)`. The result
-    (factor, fit statistics, contracts used) is written to
+    Rows come from the recorded option chains in the market store and from the
+    parquet option files under data/history. Only contracts matching the
+    strategy's expiry selection (`selection`, else settings, else monthly) are
+    fitted; when none are recorded yet every contract is used and the result
+    says so. Per-expiry diagnostics are reported. `cache` may be None, a
+    MarketData, or a store with `bars(...)`. The result is written to
     data/features/calibration.json unless `write` is False.
     """
     from openfly.experiments.data import MarketData, list_option_symbols
@@ -185,11 +272,26 @@ def calibrate(
         store = cache
     if market is None:
         market = MarketData(store=store, paths=paths)
+    if store is None:
+        store = market.store
+    selection = selection or expiry_selection(settings, default=market.calendar.selection)
     if symbols is None:
-        symbols = list_option_symbols("NFO", paths=paths, store=store)
-    rows = _calibration_rows(market, store, symbols, moneyness_pct)
-    if len(rows) == 0:
-        raise RuntimeError("no listed option bars overlap the index history; nothing to calibrate")
+        symbols = list_option_symbols("NFO", paths=paths, store=False)  # parquet files only; chains come from the store
+    parts = [_calibration_rows(market, None, symbols, moneyness_pct), _chain_calibration_rows(market, store, moneyness_pct)]
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        raise RuntimeError("no recorded option bars overlap the index history; nothing to calibrate")
+    rows = pd.concat(parts, ignore_index=True).drop_duplicates(["symbol", "timestamp"]).reset_index(drop=True)
+    rows["selected"] = [
+        market.calendar.select_expiry(t.date(), selection) == e
+        for t, e in zip(rows["timestamp"], rows["expiry"], strict=False)
+    ]
+    all_rows = rows
+    used_selection = selection
+    if rows["selected"].any():
+        rows = rows[rows["selected"]].reset_index(drop=True)
+    else:
+        used_selection = "all (no recorded contract matches the selection yet)"
 
     S = rows["spot"].to_numpy(dtype=np.float64)
     K = rows["strike"].to_numpy(dtype=np.float64)
@@ -223,17 +325,48 @@ def calibrate(
                 "days_to_expiry_mean": float(g["days"].mean()),
             }
         )
+    per_expiry = []
+    for e, g in all_rows.groupby("expiry"):
+        S_e = g["spot"].to_numpy(dtype=np.float64)
+        K_e = g["strike"].to_numpy(dtype=np.float64)
+        T_e = np.array([years_to_expiry(x) for x in g["days"].to_numpy()], dtype=np.float64)
+        v_e = g["vix"].to_numpy(dtype=np.float64) / 100.0
+        rec_e = g["close"].to_numpy(dtype=np.float64)
+        call_e = (g["option_type"] == "CE").to_numpy()
+
+        def model_e(f, S_e=S_e, K_e=K_e, T_e=T_e, v_e=v_e, call_e=call_e):
+            c, p = bs_prices(S_e, K_e, T_e, v_e * f)
+            return np.where(call_e, c, p)
+
+        def obj_e(f, rec_e=rec_e, model_e=model_e):
+            return float(np.mean(((model_e(f) - rec_e) / np.maximum(rec_e, 1.0)) ** 2))
+
+        own = minimize_scalar(obj_e, bounds=(0.2, 3.0), method="bounded", options={"xatol": 1e-4})
+        fitted_e = model_e(factor)
+        per_expiry.append(
+            {
+                "expiry": e.isoformat(),
+                "rows": int(len(g)),
+                "selected": bool(g["selected"].iloc[0]),
+                "own_factor": float(own.x),
+                "rmse_points_at_factor": float(np.sqrt(np.mean((fitted_e - rec_e) ** 2))),
+                "recorded_mean": float(rec_e.mean()),
+            }
+        )
     result = {
         "factor": factor,
+        "selection": used_selection,
         "day_count": "trading sessions over 252, fraction of the current session included",
         "fitted_at": datetime.now(IST).isoformat(),
         "contracts": sorted(set(rows["symbol"])),
+        "expiries": sorted({e.isoformat() for e in rows["expiry"]}),
         "rows": int(len(rows)),
         "moneyness_pct": moneyness_pct,
         "rmse_points": float(np.sqrt(np.mean(err**2))),
         "mean_abs_pct_error": float(np.mean(np.abs(err) / np.maximum(rec, 1.0)) * 100.0),
         "objective": float(res.fun),
         "per_day": per_day,
+        "per_expiry": per_expiry,
     }
     if write:
         p = Path(path) if path else calibration_path(paths)
@@ -256,12 +389,15 @@ def synthetic_minute_quotes(
     pricer: StraddlePricer | None = None,
     calendar: TradingCalendar | None = None,
     underlying: str = "NIFTY",
+    prior_closes=None,
 ):
     """Callable(timestamp, strike=None) -> StraddleQuote for one day, fully synthetic.
 
     `bars1m` holds that day's 1 minute index bars (timestamp, open, high,
     low, close); `vix_series` is a float, or a Series indexed by date (or by
-    timestamp) giving the VIX known at the session open. The returned object
+    timestamp) giving the VIX known at the session open; `prior_closes` may
+    give the previous session's last closes so adaptive stops at the open
+    see a full trailing return window. The returned object
     is a `MinuteQuotes`; see openfly.experiments.quotes for its full surface
     (per-leg quotes, `pinned_strike`, `leg_path`).
     """
@@ -272,8 +408,10 @@ def synthetic_minute_quotes(
     view = day_view_from_frame(trading_date, bars1m)
     vix = vix_value_for(vix_series, trading_date)
     if expiry is None:
-        expiry = calendar.next_expiry(trading_date)
-    return MinuteQuotes(view, expiry, pricer, vix, calendar, recorded=None, underlying=underlying)
+        expiry = calendar.select_expiry(trading_date)
+    return MinuteQuotes(
+        view, expiry, pricer, vix, calendar, recorded=None, underlying=underlying, prior_closes=prior_closes
+    )
 
 
 def implied_move_points(premium, horizon_minutes: float | None = None, minutes_to_expiry: float | None = None):
@@ -310,6 +448,7 @@ def straddle_value(S: float, K: float, days_to_expiry: float, vix: float, factor
 __all__ = [
     "DEFAULT_FACTOR",
     "StraddlePricer",
+    "bs_greeks",
     "bs_prices",
     "calibrate",
     "calibration_path",

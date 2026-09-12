@@ -1,7 +1,6 @@
-// Fetch-based client for every endpoint in docs/api-spec.md. In mock mode
-// each call is answered by src/mock/server.ts instead of the network.
+// Fetch-based client for every endpoint in docs/api-spec.md.
 
-import { isMock } from './mode'
+import { useBackendStore } from './backend'
 import type {
   AnalyzerResponse,
   Bars,
@@ -43,18 +42,24 @@ export class ApiError extends Error {
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
 async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
-  if (isMock()) {
-    const { mockRequest } = await import('@/mock/server')
-    return mockRequest<T>(method, path, body)
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  } catch (error) {
+    // A network failure means the backend may be gone: let the probe decide.
+    void useBackendStore.getState().probe()
+    throw new ApiError(
+      0,
+      `Backend unreachable: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
-  const response = await fetch(path, {
-    method,
-    headers: {
-      Accept: 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
   const text = await response.text()
   let parsed: unknown = null
   if (text) {

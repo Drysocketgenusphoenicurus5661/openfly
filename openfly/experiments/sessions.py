@@ -2,10 +2,14 @@
 
 One NSE session runs 09:15 to 15:30 (375 minutes). Time to expiry is counted
 in sessions: full sessions after today up to and including the expiry date,
-plus the fraction of today's session still to run. NIFTY weekly options
-expire on Tuesday from 2025-09-01 and expired on Thursday before that; when
-the expiry weekday is a holiday the contract expires on the previous trading
-day, which this module detects when it knows the trading dates.
+plus the fraction of today's session still to run. NIFTY options expire on
+Tuesday from 2025-09-01 and expired on Thursday before that: the weekly
+contract on the next such weekday, the monthly contract on the last such
+weekday of the calendar month. When the expiry weekday is a holiday the
+contract expires on the previous trading day, which this module detects when
+it knows the trading dates. `settings.strategy.expiry_selection` ("monthly",
+the default, or "weekly") picks the contract the strategy trades; a
+TradingCalendar carries that default so `days_to_expiry(ts)` needs no expiry.
 """
 
 from __future__ import annotations
@@ -21,6 +25,26 @@ SESSION_CLOSE = time(15, 30)
 SESSION_MINUTES = 375
 TRADING_DAYS_PER_YEAR = 252
 TUESDAY_EXPIRY_FROM = date(2025, 9, 1)
+EXPIRY_SELECTIONS = ("monthly", "weekly")
+DEFAULT_EXPIRY_SELECTION = "monthly"
+
+
+def expiry_selection(settings: dict | None, default: str = DEFAULT_EXPIRY_SELECTION) -> str:
+    """The configured expiry selection, validated."""
+    strategy = (settings or {}).get("strategy", {}) if isinstance(settings, dict) else {}
+    value = str(strategy.get("expiry_selection", default) or default).lower()
+    if value not in EXPIRY_SELECTIONS:
+        raise ValueError(f"expiry_selection must be one of {EXPIRY_SELECTIONS}, got {value!r}")
+    return value
+
+
+def last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    """The last date of that weekday (0 Monday) in the given month."""
+    if month == 12:
+        last = date(year, 12, 31)
+    else:
+        last = date(year, month + 1, 1) - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
 
 
 def expiry_weekday(d: date) -> int:
@@ -74,9 +98,12 @@ def weekdays_between(after: date, upto: date) -> int:
 class TradingCalendar:
     """Known trading dates (from the bar history) with weekday fallback outside coverage."""
 
-    def __init__(self, trading_dates: Iterable[date] = ()):
+    def __init__(self, trading_dates: Iterable[date] = (), selection: str = DEFAULT_EXPIRY_SELECTION):
         self.dates: list[date] = sorted({d for d in trading_dates})
         self._set = set(self.dates)
+        if selection not in EXPIRY_SELECTIONS:
+            raise ValueError(f"selection must be one of {EXPIRY_SELECTIONS}, got {selection!r}")
+        self.selection = selection
 
     @property
     def first(self) -> date | None:
@@ -137,12 +164,35 @@ class TradingCalendar:
             return nxt if self.is_trading_day(nxt) else self.previous_trading_day(nxt)
         return exp
 
+    def monthly_expiry(self, d: date) -> date:
+        """The current-month contract: last expiry weekday of the calendar month, shifted
+        back on a holiday; once that date has passed, the next month's."""
+        year, month = d.year, d.month
+        for _ in range(3):
+            first = date(year, month, 1)
+            exp = last_weekday_of_month(year, month, expiry_weekday(first))
+            if not self.is_trading_day(exp):
+                exp = self.previous_trading_day(exp)
+            if exp >= d:
+                return exp
+            year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+        raise RuntimeError("no monthly expiry found")  # pragma: no cover
+
+    def select_expiry(self, d: date, selection: str | None = None) -> date:
+        """The contract the strategy trades on `d`: monthly (default) or weekly."""
+        choice = selection or self.selection
+        if choice == "weekly":
+            return self.next_expiry(d)
+        if choice == "monthly":
+            return self.monthly_expiry(d)
+        raise ValueError(f"unknown expiry selection {choice!r}")
+
     def days_to_expiry(self, ts: datetime, expiry: date | None = None) -> float:
-        """Trading days to expiry including the fraction of the current session."""
+        """Trading days to expiry (the selected contract by default) including the fraction of the current session."""
         ts = _as_ist(ts)
         today = ts.date()
         if expiry is None:
-            expiry = self.next_expiry(today)
+            expiry = self.select_expiry(today)
         if today > expiry:
             return 0.0
         full = self.sessions_between(today, expiry)
@@ -158,7 +208,16 @@ class TradingCalendar:
 
 
 def next_expiry(d: date, calendar: TradingCalendar | None = None) -> date:
+    """The weekly expiry (kept for callers that want the current week explicitly)."""
     return (calendar or TradingCalendar()).next_expiry(d)
+
+
+def monthly_expiry(d: date, calendar: TradingCalendar | None = None) -> date:
+    return (calendar or TradingCalendar()).monthly_expiry(d)
+
+
+def select_expiry(d: date, selection: str = DEFAULT_EXPIRY_SELECTION, calendar: TradingCalendar | None = None) -> date:
+    return (calendar or TradingCalendar()).select_expiry(d, selection)
 
 
 def trading_days_to_expiry(ts: datetime, expiry: date | None = None, calendar: TradingCalendar | None = None) -> float:

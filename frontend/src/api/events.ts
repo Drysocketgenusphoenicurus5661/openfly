@@ -1,16 +1,15 @@
 // The /api/events websocket. One connection for the whole app, owned by the
 // zustand store below; components read the ring buffer through useEvents().
-// In mock mode the src/mock/events generator feeds the same store.
 
 import { useEffect } from 'react'
 import { create } from 'zustand'
+import { useBackendStore } from './backend'
 import { isServerEvent } from './guards'
-import { useModeStore } from './mode'
 import type { ServerEvent } from './types'
 
 export const EVENT_BUFFER_SIZE = 500
 
-export type SocketStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'mock'
+export type SocketStatus = 'idle' | 'connecting' | 'open' | 'closed'
 
 interface EventState {
   events: ServerEvent[]
@@ -47,7 +46,6 @@ let reconnectTimer: number | null = null
 let pingTimer: number | null = null
 let attempts = 0
 let started = false
-let stopMock: (() => void) | null = null
 
 function scheduleReconnect() {
   if (reconnectTimer !== null) return
@@ -94,6 +92,8 @@ function connect() {
       pingTimer = null
     }
     socket = null
+    // The socket dropping may mean the backend is gone; a probe decides.
+    void useBackendStore.getState().probe()
     scheduleReconnect()
   }
   socket.onerror = () => {
@@ -105,13 +105,6 @@ function connect() {
 export function startEvents() {
   if (started) return
   started = true
-  if (useModeStore.getState().mock) {
-    useEventStore.getState().setStatus('mock')
-    import('@/mock/events').then((m) => {
-      stopMock = m.startMockEvents((event) => useEventStore.getState().push(event))
-    })
-    return
-  }
   connect()
 }
 
@@ -127,8 +120,6 @@ export function stopEvents() {
   }
   socket?.close()
   socket = null
-  stopMock?.()
-  stopMock = null
 }
 
 export function useEvents(): {
@@ -136,13 +127,13 @@ export function useEvents(): {
   status: SocketStatus
   last: <T = unknown>(type: string) => ServerEvent<T> | undefined
 } {
-  const resolved = useModeStore((s) => s.resolved)
+  const up = useBackendStore((s) => s.state === 'up')
   const events = useEventStore((s) => s.events)
   const status = useEventStore((s) => s.status)
   const lastByType = useEventStore((s) => s.lastByType)
   useEffect(() => {
-    if (resolved) startEvents()
-  }, [resolved])
+    if (up) startEvents()
+  }, [up])
   return {
     events,
     status,
@@ -151,10 +142,10 @@ export function useEvents(): {
 }
 
 export function useLastEvent<T = unknown>(type: string): ServerEvent<T> | undefined {
-  const resolved = useModeStore((s) => s.resolved)
+  const up = useBackendStore((s) => s.state === 'up')
   const event = useEventStore((s) => s.lastByType[type])
   useEffect(() => {
-    if (resolved) startEvents()
-  }, [resolved])
+    if (up) startEvents()
+  }, [up])
   return event as ServerEvent<T> | undefined
 }

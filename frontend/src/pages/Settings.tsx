@@ -31,11 +31,26 @@ interface Field {
   max?: number
   step?: number
   options?: { value: string; label: string }[]
+  // Greys the input out; the value is still saved.
+  disabledWhen?: (form: Form) => boolean
 }
+
+const whenFixed = (form: Form) => form.strategy.stop_mode === 'fixed'
+const whenAdaptive = (form: Form) => form.strategy.stop_mode !== 'fixed'
 
 const FIELDS: Record<Section, Field[]> = {
   strategy: [
     { key: 'underlying', label: 'Underlying', type: 'text' },
+    {
+      key: 'expiry_selection',
+      label: 'Expiry',
+      type: 'select',
+      options: [
+        { value: 'monthly', label: 'monthly (current month)' },
+        { value: 'weekly', label: 'weekly (nearest expiry)' },
+      ],
+      help: 'Monthly: the last expiry of the calendar month; Weekly: the nearest expiry',
+    },
     { key: 'lot_size', label: 'Lot size', type: 'number', min: 1, step: 1 },
     {
       key: 'lots',
@@ -100,13 +115,82 @@ const FIELDS: Record<Section, Field[]> = {
       help: '0 trades the expiring contract on expiry day',
     },
     {
+      key: 'stop_mode',
+      label: 'Stop sizing',
+      type: 'select',
+      options: [
+        { value: 'adaptive', label: 'adaptive (from the expected one-hour move)' },
+        { value: 'fixed', label: 'fixed (the percentages below)' },
+      ],
+      help: 'Adaptive: stop distances are computed at each entry from the expected one-hour move and held for that straddle; Fixed: use the percentages below',
+    },
+    {
+      key: 'stop_horizon_minutes',
+      label: 'Stop horizon (minutes)',
+      type: 'number',
+      min: 5,
+      max: 375,
+      step: 5,
+      help: 'Window for the expected move, the larger of implied and realized',
+      disabledWhen: whenFixed,
+    },
+    {
+      key: 'stop_buffer',
+      label: 'Stop buffer',
+      type: 'number',
+      min: 0.5,
+      max: 5,
+      step: 0.05,
+      help: 'Multiplier on the premium rise for the expected move',
+      disabledWhen: whenFixed,
+    },
+    {
+      key: 'leg_stop_min_pct',
+      label: 'Leg stop floor (percent)',
+      type: 'number',
+      min: 1,
+      max: 200,
+      step: 1,
+      help: 'Adaptive leg stops are clipped to this band',
+      disabledWhen: whenFixed,
+    },
+    {
+      key: 'leg_stop_max_pct',
+      label: 'Leg stop cap (percent)',
+      type: 'number',
+      min: 1,
+      max: 300,
+      step: 1,
+      disabledWhen: whenFixed,
+    },
+    {
+      key: 'combined_stop_min_pct',
+      label: 'Combined stop floor (percent)',
+      type: 'number',
+      min: 1,
+      max: 100,
+      step: 1,
+      help: 'Adaptive combined stops are clipped to this band',
+      disabledWhen: whenFixed,
+    },
+    {
+      key: 'combined_stop_max_pct',
+      label: 'Combined stop cap (percent)',
+      type: 'number',
+      min: 1,
+      max: 200,
+      step: 1,
+      disabledWhen: whenFixed,
+    },
+    {
       key: 'leg_stop_pct',
-      label: 'Leg stop percent',
+      label: 'Leg stop percent (fixed sizing)',
       type: 'number',
       min: 1,
       max: 200,
       step: 1,
       help: 'Fixed stop per leg, placed at the broker as SL-M and re-placed if it goes missing; never trailed',
+      disabledWhen: whenAdaptive,
     },
     {
       key: 'leg_stop_mode',
@@ -135,12 +219,13 @@ const FIELDS: Record<Section, Field[]> = {
     },
     {
       key: 'stop_pct',
-      label: 'Combined stop percent',
+      label: 'Combined stop percent (fixed sizing)',
       type: 'number',
       min: 1,
       max: 100,
       step: 1,
       help: 'Exit both legs when the summed premium rises this much above the credit',
+      disabledWhen: whenAdaptive,
     },
     {
       key: 'target_pct',
@@ -328,6 +413,12 @@ function validate(form: Form): Record<string, string> {
   if (isValidHm(s.square_off) && hmToMinutes(s.square_off) > hmToMinutes('15:30')) {
     errors['strategy.square_off'] = 'Must be at or before 15:30'
   }
+  if (Number(s.leg_stop_min_pct) > Number(s.leg_stop_max_pct)) {
+    errors['strategy.leg_stop_max_pct'] = 'Cap must be at or above the floor'
+  }
+  if (Number(s.combined_stop_min_pct) > Number(s.combined_stop_max_pct)) {
+    errors['strategy.combined_stop_max_pct'] = 'Cap must be at or above the floor'
+  }
   if (Number(s.lots) > Number(form.risk.max_lots))
     errors['strategy.lots'] = `Above risk.max_lots (${form.risk.max_lots})`
   if (Number(s.lock_after_pct) >= Number(s.target_pct))
@@ -340,27 +431,34 @@ function FieldInput({
   field,
   value,
   error,
+  disabled = false,
   onChange,
 }: {
   section: Section
   field: Field
   value: unknown
   error?: string
+  disabled?: boolean
   onChange: (value: unknown) => void
 }) {
   const id = `${section}.${field.key}`
   return (
-    <div className="space-y-1">
+    <div className={cn('space-y-1', disabled && 'opacity-60')}>
       <div className="flex items-center justify-between gap-2">
         <Label htmlFor={id} className="text-xs">
           {field.label}
         </Label>
         {field.type === 'switch' && (
-          <Switch id={id} checked={Boolean(value)} onCheckedChange={(v) => onChange(v)} />
+          <Switch
+            id={id}
+            disabled={disabled}
+            checked={Boolean(value)}
+            onCheckedChange={(v) => onChange(v)}
+          />
         )}
       </div>
       {field.type === 'select' && (
-        <Select value={String(value)} onValueChange={(v) => onChange(v)}>
+        <Select value={String(value)} disabled={disabled} onValueChange={(v) => onChange(v)}>
           <SelectTrigger id={id} size="sm" className="w-full">
             <SelectValue />
           </SelectTrigger>
@@ -376,6 +474,7 @@ function FieldInput({
       {(field.type === 'number' || field.type === 'text' || field.type === 'time') && (
         <Input
           id={id}
+          disabled={disabled}
           className={cn('h-8', error && 'border-loss')}
           type={field.type === 'number' ? 'number' : 'text'}
           min={field.min}
@@ -529,6 +628,7 @@ export default function SettingsPage() {
                   field={field}
                   value={(form[section] as unknown as Record<string, unknown>)[field.key]}
                   error={errors[`${section}.${field.key}`]}
+                  disabled={field.disabledWhen?.(form) ?? false}
                   onChange={(v) => change(section, field.key, v)}
                 />
               ))}

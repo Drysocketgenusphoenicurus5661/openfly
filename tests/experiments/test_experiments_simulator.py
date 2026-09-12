@@ -38,10 +38,17 @@ def _flat(n=375, c=100.0, p=100.0):
     return np.full(n, c), np.full(n, p)
 
 
+def _fixed_rules() -> Rules:
+    """The fixed percentage rules (30 percent per leg, 25 percent combined) these tests are written for."""
+    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules.stop_mode = "fixed"
+    return rules
+
+
 def test_square_off_and_costs():
     call, put = _flat()
     q = _quotes_with_paths(call, put)
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     entry = 4  # bar completed at 09:20
     t = run_trade(q, entry, rules)
     assert t.exit_reason == "SQUARE_OFF" and t.exit_minute == 360 and t.entry_minute == 5
@@ -56,7 +63,7 @@ def test_combined_stop_and_target():
     call[50:] = 130.0  # combined 230 = 15 percent up, no exit; then
     call[80:] = 160.0  # combined 260 = 30 percent up: combined stop (legs at +60 and 0 percent, no leg stop)
     q = _quotes_with_paths(call, put)
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     rules.leg_stop_pct = 100.0
     t = run_trade(q, 4, rules)
     assert t.exit_reason == "STOP" and t.exit_row == 80 and t.call_exit == 160.0
@@ -72,7 +79,7 @@ def test_lock_moves_stop_to_entry_credit():
     call[30:] = 80.0  # combined 180: 10 percent down
     call[40:] = 70.0  # combined 170: 15 percent down, lock armed
     call[60:] = 100.0  # back to the credit: lock exit
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     t = run_trade(_quotes_with_paths(call, put), 4, rules)
     assert t.exit_reason == "LOCK" and t.exit_row == 60
 
@@ -81,7 +88,7 @@ def test_leg_stop_hold_other_then_target():
     call, put = _flat()
     call[20:] = 131.0  # call up 31 percent: leg stop at row 20 (combined 231, below the 25 percent combined stop)
     put[70:] = 55.0  # the surviving put falls 45 percent: its own target
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     assert rules.on_leg_stop == "hold_other"
     t = run_trade(_quotes_with_paths(call, put), 4, rules)
     assert t.exit_reason == "LEG_STOP" and t.call_reason == "LEG_STOP" and t.call_exit_row == 20
@@ -97,7 +104,7 @@ def test_leg_stop_hold_other_then_target():
 def test_readout_exit_and_dynamic_reentry():
     call, put = _flat()
     q = _quotes_with_paths(call, put)
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     obs = observation_rows(q, 1)
     entry = np.zeros(q.n, dtype=bool)
     exit_ = np.zeros(q.n, dtype=bool)
@@ -121,7 +128,7 @@ def test_fixed_entry_reenters_and_random_matches_rows():
     call[61:] = 100.0
     put[61:] = 100.0  # then flat again
     q = _quotes_with_paths(call, put)
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     obs = observation_rows(q, 5)
     trades = simulate_day(q, rules, obs, always_enter=True)
     assert trades[0].entry_row == 4 and trades[0].exit_reason == "TARGET" and trades[0].exit_row == 60
@@ -138,7 +145,7 @@ def test_minute_quotes_for_synthetic_day():
     d = market.dates[0]
     q = minute_quotes_for(d, market=market, settings=DEFAULT_SETTINGS, prefer_recorded=False)
     assert q.source == "synthetic" and q.synthetic_fraction == 1.0 and q.n == 375
-    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules = _fixed_rules()
     t = run_trade(q, 4, rules)
     assert t.credit > 0 and t.exit_minute <= 360
     assert isinstance(market.calendar, TradingCalendar)

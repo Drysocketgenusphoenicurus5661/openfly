@@ -91,3 +91,28 @@ export function nowIst(): Date {
 export function isValidHm(hm: string): boolean {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(hm)
 }
+
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+
+const expiryPartsFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kolkata',
+  day: '2-digit',
+  month: '2-digit',
+  year: '2-digit',
+})
+
+// Contract style expiry, for example 29-SEP-26.
+export function formatExpiry(iso: string | null | undefined): string {
+  const d = parseIso(iso?.length === 10 ? `${iso}T00:00:00+05:30` : iso)
+  if (!d) return '-'
+  const parts = expiryPartsFormatter.formatToParts(d)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  const month = MONTHS[Number(get('month')) - 1] ?? get('month')
+  return `${get('day')}-${month}-${get('year')}`
+}
+
+// "29-SEP-26 monthly"
+export function describeExpiry(iso: string | null | undefined, selection?: string | null): string {
+  const text = formatExpiry(iso)
+  return selection ? `${text} ${selection}` : text
+}

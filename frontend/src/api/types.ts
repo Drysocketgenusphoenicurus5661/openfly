@@ -98,9 +98,13 @@ export interface ChainRow {
   pe: ChainQuote
 }
 
+export type ExpirySelection = 'monthly' | 'weekly'
+
 export interface Chain {
   underlying: string
   expiry: string
+  // Which expiry the strategy trades; the backend reports it with the chain.
+  expiry_selection?: ExpirySelection
   days_to_expiry: number
   index_ltp: number
   vix: number
@@ -265,6 +269,8 @@ export interface StraddleInPosition {
   pnl: number
   entered_at: string
   square_off_at: string
+  stop_basis?: StopBasis | null
+  premium_source?: PremiumSource | null
 }
 
 export interface StraddleFlat {
@@ -350,11 +356,34 @@ export interface PositionList {
 export type LegStopMode = 'broker' | 'software'
 export type OnLegStop = 'hold_other' | 'exit_both'
 
+export type PremiumSource = 'recorded' | 'synthetic'
+
+export type StopMode = 'adaptive' | 'fixed'
+
+// How the stops of a straddle were sized (docs/api-spec.md, "Volatility-adaptive stops").
+export interface StopBasis {
+  mode: StopMode
+  horizon_minutes: number
+  expected_move_points: number
+  implied_move_points: number
+  realized_move_points: number
+  leg_stop_pct: { ce: number; pe: number }
+  combined_stop_pct: number
+}
+
 export interface StrategySettings {
   underlying: string
   lot_size: number
   lots: number
   product: string
+  expiry_selection: ExpirySelection
+  stop_mode: StopMode
+  stop_horizon_minutes: number
+  stop_buffer: number
+  leg_stop_min_pct: number
+  leg_stop_max_pct: number
+  combined_stop_min_pct: number
+  combined_stop_max_pct: number
   leg_stop_pct: number
   leg_stop_mode: LegStopMode
   on_leg_stop: OnLegStop
@@ -390,6 +419,8 @@ export interface NeuralSettings {
   plastic: boolean
   // How often the fly observes in the live worker.
   live_interval: LiveInterval
+  // Bar interval used by replays and simulations.
+  replay_interval?: LiveInterval
 }
 
 export interface CostSettings {
@@ -499,6 +530,8 @@ export interface StepStraddle {
   pnl: number | null
   legs?: StraddleLeg[] | null
   expiry?: string | null
+  stop_basis?: StopBasis | null
+  premium_source?: PremiumSource | null
 }
 
 export interface Fill {
@@ -540,6 +573,8 @@ export interface ReplayStep {
   compute_seconds: number
   narrative: string
   technical: StepTechnical
+  stop_basis?: StopBasis | null
+  premium_source?: PremiumSource | null
 }
 
 export interface ReplayDates {

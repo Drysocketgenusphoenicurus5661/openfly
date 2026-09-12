@@ -28,7 +28,7 @@ from openfly.experiments.features import DEFAULT_CACHE_POPULATIONS, FeatureCache
 from openfly.experiments.metrics import ACCURACY_THRESHOLD, cumulative_curve, window_metrics
 from openfly.experiments.observations import ObservationBuilder, replay_interval
 from openfly.experiments.quotes import minute_quotes_for
-from openfly.experiments.sessions import IST
+from openfly.experiments.sessions import IST, expiry_selection
 from openfly.experiments.simulator import (
     Rules,
     WindowResult,
@@ -85,6 +85,9 @@ def normalize_config(config: dict, settings: dict | None) -> dict:
     out["cache_populations"] = list(out.get("cache_populations", DEFAULT_CACHE_POPULATIONS))
     out["seed"] = int(out.get("seed", 0))
     out["fake_brain"] = bool(out.get("fake_brain", False))
+    out["expiry_selection"] = str(out.get("expiry_selection") or expiry_selection(settings))
+    if out["expiry_selection"] not in ("monthly", "weekly"):
+        raise ValueError(f"expiry_selection must be monthly or weekly, got {out['expiry_selection']!r}")
     out.setdefault(
         "name",
         f"encoder {out['encoder']}, {out['readout']}, {'plastic' if out['plastic'] else 'frozen'}, {out['interval']}",
@@ -186,8 +189,11 @@ class ExperimentRunner:
         quotes_factory=None,
         cache_root: str | Path | None = None,
     ):
-        self.settings = settings or {}
-        self.config = normalize_config(config, self.settings)
+        self.config = normalize_config(config, settings or {})
+        # The experiment's expiry selection overrides the stored setting for everything downstream.
+        merged = dict(settings or {})
+        merged["strategy"] = dict(merged.get("strategy", {}), expiry_selection=self.config["expiry_selection"])
+        self.settings = merged
         self.brain_factory = brain_factory
         self.paths = paths
         self.market = market
@@ -268,7 +274,8 @@ class ExperimentRunner:
         settings = self.settings
         self._progress("loading")
         self._write()
-        market = self.market or MarketData(paths=self.paths)
+        market = self.market or MarketData(paths=self.paths, expiry_selection=cfg["expiry_selection"])
+        market.calendar.selection = cfg["expiry_selection"]
         self.market = market
         windows = {w: market.require_dates(*parse_window(cfg[w]), limit=cfg["limit_days"]) for w in WINDOWS}
         all_dates = sorted({d for ds in windows.values() for d in ds})
@@ -303,6 +310,10 @@ class ExperimentRunner:
             "cache_columns": int(len(cache.columns)),
             "rules": rules.to_dict(),
             "windows": {w: [d.isoformat() for d in ds] for w, ds in windows.items()},
+            "expiry_selection": cfg["expiry_selection"],
+            "expiries": {
+                w: sorted({self.builder.expiry_for(d).isoformat() for d in ds}) for w, ds in windows.items()
+            },
         }
 
         # (a) feature pass

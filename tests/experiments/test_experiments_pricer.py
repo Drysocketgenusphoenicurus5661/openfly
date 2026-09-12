@@ -51,14 +51,65 @@ def test_implied_and_realized_moves():
 
 def test_trading_time_to_expiry():
     cal = TradingCalendar([date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10), date(2026, 9, 11),
-                           date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16)])
+                           date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16)], selection="weekly")
     assert cal.next_expiry(date(2026, 9, 11)) == date(2026, 9, 15)
     assert cal.days_to_expiry(datetime(2026, 9, 11, 15, 30, tzinfo=IST)) == pytest.approx(2.0)
     assert cal.days_to_expiry(datetime(2026, 9, 11, 9, 15, tzinfo=IST)) == pytest.approx(3.0)
     assert cal.days_to_expiry(datetime(2026, 9, 15, 15, 30, tzinfo=IST)) == pytest.approx(0.0)
+    # explicit expiry overrides the selection
+    assert cal.days_to_expiry(datetime(2026, 9, 11, 15, 30, tzinfo=IST), date(2026, 9, 29)) == pytest.approx(12.0)
     # a holiday on the expiry weekday moves the expiry to the previous session
     cal2 = TradingCalendar([date(2026, 9, 14), date(2026, 9, 16)])
     assert cal2.next_expiry(date(2026, 9, 14)) == date(2026, 9, 14)
+
+
+def test_monthly_expiry_and_selection():
+    cal = TradingCalendar()  # weekday rule only
+    assert cal.monthly_expiry(date(2025, 8, 8)) == date(2025, 8, 28)  # last Thursday before September 2025
+    assert cal.monthly_expiry(date(2025, 8, 28)) == date(2025, 8, 28)  # expiry day itself
+    assert cal.monthly_expiry(date(2025, 8, 29)) == date(2025, 9, 30)  # rolled to the next month, last Tuesday
+    assert cal.monthly_expiry(date(2026, 9, 11)) == date(2026, 9, 29)
+    assert cal.monthly_expiry(date(2026, 9, 30)) == date(2026, 10, 27)
+    assert cal.monthly_expiry(date(2026, 12, 15)) == date(2026, 12, 29)
+    assert cal.select_expiry(date(2026, 9, 11), "weekly") == cal.next_expiry(date(2026, 9, 11)) == date(2026, 9, 15)
+    assert cal.select_expiry(date(2026, 9, 11), "monthly") == date(2026, 9, 29)
+    assert cal.select_expiry(date(2026, 9, 11)) == date(2026, 9, 29)  # monthly is the default
+    assert TradingCalendar(selection="weekly").select_expiry(date(2026, 9, 11)) == date(2026, 9, 15)
+    with pytest.raises(ValueError):
+        cal.select_expiry(date(2026, 9, 11), "quarterly")
+    # a holiday on the last Tuesday shifts the monthly expiry to the previous session (2026-03-31 was a holiday)
+    march = [date(2026, 3, d) for d in range(2, 31) if date(2026, 3, d).weekday() < 5 and d not in (3, 26, 31)]
+    holiday_cal = TradingCalendar(march + [date(2026, 4, 1), date(2026, 4, 2)])
+    assert holiday_cal.monthly_expiry(date(2026, 3, 20)) == date(2026, 3, 30)
+    assert holiday_cal.days_to_expiry(datetime(2026, 3, 27, 15, 30, tzinfo=IST)) == pytest.approx(1.0)
+    # settings drive the selection
+    from openfly.experiments.sessions import expiry_selection
+
+    assert expiry_selection({"strategy": {"expiry_selection": "weekly"}}) == "weekly"
+    assert expiry_selection({}) == "monthly"
+    with pytest.raises(ValueError):
+        expiry_selection({"strategy": {"expiry_selection": "daily"}})
+
+
+def test_observations_and_quotes_follow_the_selection():
+    from openfly.config import DEFAULT_SETTINGS
+    from openfly.experiments.observations import ObservationBuilder
+    from openfly.experiments.quotes import minute_quotes_for
+
+    market = synthetic_market(days=2, seed=6, start=date(2026, 7, 1))
+    d = market.dates[1]
+    monthly = ObservationBuilder(market, settings=DEFAULT_SETTINGS, interval="5m")
+    weekly_settings = {"strategy": dict(DEFAULT_SETTINGS["strategy"], expiry_selection="weekly"), "neural": DEFAULT_SETTINGS["neural"]}
+    weekly = ObservationBuilder(market, settings=weekly_settings, interval="5m")
+    assert monthly.expiry_for(d) == date(2026, 7, 28) and weekly.expiry_for(d) == date(2026, 7, 7)
+    om = monthly.day_observations(d)[10]
+    ow = weekly.day_observations(d)[10]
+    assert om.days_to_expiry > ow.days_to_expiry and om.straddle_premium > ow.straddle_premium
+    qm = minute_quotes_for(d, market=market, settings=DEFAULT_SETTINGS, prefer_recorded=False)
+    qw = minute_quotes_for(d, market=market, settings=weekly_settings, prefer_recorded=False)
+    assert qm.expiry == date(2026, 7, 28) and qw.expiry == date(2026, 7, 7)
+    assert qm(100).combined_ltp > qw(100).combined_ltp
+    assert qm(100).call.symbol.startswith("NIFTY28JUL26") and qw(100).call.symbol.startswith("NIFTY07JUL26")
 
 
 def test_synthetic_minute_quotes_shape():
@@ -85,9 +136,11 @@ def test_synthetic_minute_quotes_shape():
 
 @pytest.mark.skipif(not HAVE_HISTORY, reason="NIFTY and option history not present")
 def test_calibration_matches_recorded_straddle(tmp_path):
-    result = calibrate(write=True, path=tmp_path / "calibration.json")
+    result = calibrate(write=True, path=tmp_path / "calibration.json", selection="weekly")
     assert 0.5 < result["factor"] < 2.0
     assert result["rows"] > 100 and (tmp_path / "calibration.json").exists()
+    assert result["selection"] == "weekly" and "2026-09-15" in result["expiries"]
+    assert all("own_factor" in e for e in result["per_expiry"])
     from openfly.experiments.data import MarketData
 
     market = MarketData(paths=PATHS)

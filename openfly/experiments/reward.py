@@ -4,8 +4,9 @@
 
 H is settings.neural.horizon_minutes (60), realized_move the absolute index
 move in points over the next H minutes inside the session, implied_move the
-synthetic ATM straddle premium at t, cost_fraction the round-trip cost as a
-fraction of that premium (about 0.01). The reward delivered is the advantage
+synthetic ATM straddle premium of the selected contract
+(settings.strategy.expiry_selection, monthly by default) at t, cost_fraction
+the round-trip cost as a fraction of that premium (about 0.01). The reward delivered is the advantage
 r_t minus a baseline: the mean of r over the trailing 20 trading days
 (strictly before t's date; on the first day, the expanding mean of the same
 day's earlier observations). Nothing uses information after t + H.
@@ -33,7 +34,7 @@ import pandas as pd
 
 from openfly.experiments.costs import cost_fraction, costs_from_settings
 from openfly.experiments.pricer import StraddlePricer
-from openfly.experiments.sessions import IST, SESSION_MINUTES, TradingCalendar
+from openfly.experiments.sessions import IST, SESSION_MINUTES, TradingCalendar, expiry_selection
 
 BASELINE_DAYS = 20
 
@@ -100,6 +101,7 @@ class RewardSeries:
         days = _split_by_day(bars_by_day)
         calendar = calendar or (market.calendar if market is not None else (pricer.calendar if pricer else TradingCalendar()))
         pricer = pricer or StraddlePricer(calendar=calendar)
+        selection = expiry_selection(settings, default=calendar.selection)
 
         records = []
         for d in sorted(days):
@@ -113,7 +115,7 @@ class RewardSeries:
             close_minute = start_minute + max(bar_minutes, 1)
             close = f["close"].to_numpy(dtype=np.float64)
             v = _vix_for(vix, d, market)
-            expiry = calendar.next_expiry(d)
+            expiry = calendar.select_expiry(d, selection)
             full = calendar.sessions_between(d, expiry)
             remaining = np.clip((SESSION_MINUTES - close_minute) / SESSION_MINUTES, 0.0, 1.0)
             dte = full + remaining

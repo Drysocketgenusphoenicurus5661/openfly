@@ -1,11 +1,12 @@
-// NIFTY candles on pane 0, the combined straddle premium on pane 1 with
-// horizontal lines for the combined stop, target and per-leg stops, and
-// action markers with tooltips. In replay mode the chart shows a prefix of
-// the day through openalgo-charts' ReplayController.
+// Two titled panes on one time axis: NIFTY one minute candles with action
+// markers on top, the ATM straddle premium in points below with the
+// combined stop, target, credit and per-leg stop lines. In replay mode the
+// chart shows a prefix of the day through openalgo-charts' ReplayController.
 
 import {
   type Chart,
   createChart,
+  PaneLegend,
   type PriceLine,
   ReplayController,
   type SeriesApi,
@@ -49,6 +50,8 @@ export interface PriceChartProps {
   replayIndex?: number
   height?: number
   className?: string
+  priceTitle?: string
+  premiumTitle?: string
   onMarkerClick?: (id: string) => void
   emptyText?: string
 }
@@ -84,7 +87,6 @@ function markerShape(action: string): {
       return { shape: 'arrowUp', position: 'belowBar', size: 'medium' }
     case 'EXIT':
     case 'TARGET':
-      return { shape: 'arrowDown', position: 'aboveBar', size: 'medium' }
     case 'STOP':
       return { shape: 'arrowDown', position: 'aboveBar', size: 'medium' }
     case 'STOP_LEG':
@@ -119,8 +121,10 @@ export function PriceChart({
   markers,
   levels,
   replayIndex,
-  height = 420,
+  height = 460,
   className,
+  priceTitle = 'NIFTY 1 minute (NSE_INDEX)',
+  premiumTitle = 'ATM straddle premium (points)',
   onMarkerClick,
   emptyText = 'No bars yet',
 }: PriceChartProps) {
@@ -130,6 +134,7 @@ export function PriceChart({
   const candlesRef = useRef<SeriesApi | null>(null)
   const premiumRef = useRef<SeriesApi | null>(null)
   const markersRef = useRef<SeriesMarkers | null>(null)
+  const legendsRef = useRef<{ price: PaneLegend; premium: PaneLegend } | null>(null)
   const replayRef = useRef<ReplayController | null>(null)
   const linesRef = useRef<Map<string, PriceLine>>(new Map())
   const pointRef = useRef<{ x: number; y: number } | null>(null)
@@ -149,8 +154,8 @@ export function PriceChart({
     return map
   }, [markers])
 
-  // Create once.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the chart is created once; the theme effect below follows `dark`
+  // Create once: both panes, both series, both titles.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the chart is created once; later effects follow the props
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -166,6 +171,27 @@ export function PriceChart({
     })
     candlesRef.current = candles
     markersRef.current = candles.createMarkers()
+    const premiumSeries = chart.addSeries('line', {
+      paneIndex: 1,
+      style: {
+        color: dark ? PREMIUM_COLOR.dark : PREMIUM_COLOR.light,
+        lineWidth: 2,
+        title: premiumTitle,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        precision: 1,
+      },
+    })
+    premiumRef.current = premiumSeries
+    chart.setPaneWeight(0, 3)
+    chart.setPaneWeight(1, 2)
+    chart.setCanvasOptions({ margins: { top: 20, bottom: 14 } })
+    const priceLegend = new PaneLegend({ id: 'price-title', title: priceTitle, actions: [] })
+    const premiumLegend = new PaneLegend({ id: 'premium-title', title: premiumTitle, actions: [] })
+    chart.addPrimitive(priceLegend, 0)
+    chart.addPrimitive(premiumLegend, 1)
+    legendsRef.current = { price: priceLegend, premium: premiumLegend }
+
     chart.on('click', (payload) => {
       const id = (payload as { id: string | null }).id
       if (id && clickRef.current) clickRef.current(id)
@@ -184,6 +210,7 @@ export function PriceChart({
       replayRef.current?.stop()
       replayRef.current = null
       linesRef.current.clear()
+      legendsRef.current = null
       chart.destroy()
       chartRef.current = null
       candlesRef.current = null
@@ -198,37 +225,25 @@ export function PriceChart({
     premiumRef.current?.applyOptions({ color: dark ? PREMIUM_COLOR.dark : PREMIUM_COLOR.light })
   }, [dark])
 
+  useEffect(() => {
+    legendsRef.current?.price.setOptions({ title: priceTitle })
+    legendsRef.current?.premium.setOptions({ title: premiumTitle })
+  }, [priceTitle, premiumTitle])
+
   // Data and replay.
   useEffect(() => {
     const chart = chartRef.current
     const candles = candlesRef.current
-    if (!chart || !candles || !ready) return
-    if (premiumPoints.length > 0 && !premiumRef.current) {
-      premiumRef.current = chart.addSeries('line', {
-        paneIndex: 1,
-        style: {
-          color: dark ? PREMIUM_COLOR.dark : PREMIUM_COLOR.light,
-          lineWidth: 2,
-          title: 'Premium',
-          priceLineVisible: false,
-          lastValueVisible: true,
-          precision: 1,
-        },
-      })
-      chart.setPaneWeight(0, 3)
-      chart.setPaneWeight(1, 1.4)
-    }
     const premiumSeries = premiumRef.current
+    if (!chart || !candles || !premiumSeries || !ready) return
 
     if (replayIndex !== undefined) {
-      // Replay: full data once, then the controller shows a prefix.
       if (!replayRef.current) {
         candles.setData(chartBars)
-        premiumSeries?.setData(premiumPoints)
+        premiumSeries.setData(premiumPoints)
         if (chartBars.length === 0) return
-        const series = premiumSeries ? [candles, premiumSeries] : [candles]
         replayRef.current = new ReplayController(chart, {
-          series,
+          series: [candles, premiumSeries],
           bars: chartBars,
           startIndex: Math.min(replayIndex, chartBars.length - 1),
         })
@@ -239,16 +254,15 @@ export function PriceChart({
       return
     }
 
-    // Live: replace data and keep the right edge in view.
     if (replayRef.current) {
       replayRef.current.stop()
       replayRef.current = null
     }
     const previous = candles.getData().length
     candles.setData(chartBars)
-    premiumSeries?.setData(premiumPoints)
+    premiumSeries.setData(premiumPoints)
     if (previous === 0 || Math.abs(chartBars.length - previous) > 5) {
-      chart.timeScale.fitContent(chartBars.length)
+      chart.timeScale.fitContent(Math.max(chartBars.length, 1))
     } else {
       const range = chart.getVisibleLogicalRange()
       const span = Math.max(20, range.to - range.from)
@@ -256,9 +270,9 @@ export function PriceChart({
         chart.setVisibleLogicalRange({ from: chartBars.length - span, to: chartBars.length + 2 })
       }
     }
-  }, [chartBars, premiumPoints, replayIndex, ready, dark])
+  }, [chartBars, premiumPoints, replayIndex, ready])
 
-  // Tear the controller down when the underlying day changes.
+  // A new day means a new replay controller.
   // biome-ignore lint/correctness/useExhaustiveDependencies: chartBars is the trigger, not a value the cleanup reads
   useEffect(() => {
     return () => {
@@ -267,7 +281,7 @@ export function PriceChart({
     }
   }, [chartBars])
 
-  // Markers.
+  // Markers on the price pane.
   useEffect(() => {
     const layer = markersRef.current
     if (!layer || !ready) return
@@ -283,17 +297,15 @@ export function PriceChart({
           color: actionHex(m.action, dark),
           text: actionStyle(m.action).label,
           ...shape,
-          ...(m.price !== undefined && shape.position === 'atPrice' ? { price: m.price } : {}),
         }
       })
     layer.setMarkers(list)
   }, [markers, replayIndex, chartBars, dark, ready])
 
   // Levels on the premium pane.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the premium series (and its pane) may only exist once points arrive
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart || !ready || !premiumRef.current) return
+    if (!chart || !ready) return
     const lines = linesRef.current
     const wanted = new Map((levels ?? []).map((l) => [l.id, l]))
     for (const [id, line] of lines) {
@@ -306,9 +318,17 @@ export function PriceChart({
       const existing = lines.get(level.id)
       const color = levelColor(level.kind, dark)
       const dashed = level.kind === 'leg_stop' || level.kind === 'entry'
+      // Leg stops are stubs from the right axis, staggered so their pills do not stack.
+      const extentFromRight = level.kind === 'leg_stop' ? (level.id.endsWith('CE') ? 0.62 : 0.4) : 1
       if (existing) {
         existing.setPrice(level.price)
-        existing.setOptions({ color, label: level.price.toFixed(1), badge: level.label, dashed })
+        existing.setOptions({
+          color,
+          label: level.price.toFixed(1),
+          badge: level.label,
+          dashed,
+          extentFromRight,
+        })
       } else {
         const line = chart.addPriceLine(
           {
@@ -319,14 +339,14 @@ export function PriceChart({
             dashed,
             label: level.price.toFixed(1),
             badge: level.label,
-            extentFromRight: 1,
+            extentFromRight,
           },
           1
         )
         lines.set(level.id, line)
       }
     }
-  }, [levels, dark, ready, premiumPoints.length])
+  }, [levels, dark, ready])
 
   const hoveredText = hovered ? markerText.get(hovered.id) : null
 

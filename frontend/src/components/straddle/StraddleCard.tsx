@@ -1,17 +1,21 @@
-import type { Straddle } from '@/api/types'
+import type { ExpirySelection, Straddle } from '@/api/types'
 import { Pnl } from '@/components/common/Pnl'
+import { PremiumSourceBadge } from '@/components/common/PremiumSourceBadge'
 import { Stat } from '@/components/common/Stat'
 import { StatusBadge, toneFor } from '@/components/common/StatusBadge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { fmtNum } from '@/lib/format'
-import { formatDate, formatTime } from '@/lib/time'
+import { describeStopBasis } from '@/lib/stops'
+import { formatExpiry, formatTime } from '@/lib/time'
 
 export function StraddleCard({
   straddle,
   straddleNo,
+  expirySelection,
 }: {
   straddle: Straddle | undefined
   straddleNo?: number
+  expirySelection?: ExpirySelection | null
 }) {
   if (!straddle?.in_position) {
     return (
@@ -32,15 +36,23 @@ export function StraddleCard({
       <CardHeader>
         <CardTitle className="flex items-center justify-between text-sm">
           <span>Current straddle{straddleNo ? ` (straddle ${straddleNo} today)` : ''}</span>
-          <span className="tabular text-xs text-muted-foreground">
-            entered {formatTime(straddle.entered_at)}
+          <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
+            <PremiumSourceBadge
+              source={straddle.premium_source}
+              className="px-1.5 py-0 text-[10px]"
+            />
+            <span className="tabular">entered {formatTime(straddle.entered_at)}</span>
           </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-3 gap-x-3 gap-y-2">
           <Stat label="Strike" value={straddle.strike} />
-          <Stat label="Expiry" value={formatDate(straddle.expiry)} />
+          <Stat
+            label="Expiry"
+            value={formatExpiry(straddle.expiry)}
+            sub={expirySelection ?? undefined}
+          />
           <Stat label="Lots" value={straddle.lots} />
           <Stat label="Credit" value={fmtNum(straddle.entry_credit, 1)} />
           <Stat label="Combined LTP" value={fmtNum(straddle.combined_ltp, 1)} />
@@ -59,6 +71,11 @@ export function StraddleCard({
           />
           <Stat label="Square off" value={formatTime(straddle.square_off_at)} />
         </div>
+        {straddle.stop_basis && (
+          <p className="text-xs text-muted-foreground" data-testid="stop-basis">
+            {describeStopBasis(straddle.stop_basis)}
+          </p>
+        )}
         <table className="w-full text-xs">
           <thead>
             <tr className="text-left text-muted-foreground">

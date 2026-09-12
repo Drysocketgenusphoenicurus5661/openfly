@@ -394,7 +394,7 @@ class FeatureEncoder(_BaseEncoder):
         realized_bars: int = 12,
         horizon_minutes: int = 60,
         session_minutes: int = 375,
-        expiry_scale_days: float = 5.0,
+        expiry_scale_days: float = 25.0,
     ):
         super().__init__(eye_map)
         self.grid = int(grid)

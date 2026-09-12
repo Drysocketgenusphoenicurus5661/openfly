@@ -12,9 +12,9 @@ import {
 import { useTheme } from 'next-themes'
 import { NavLink, Outlet } from 'react-router'
 import { useEvents } from '@/api/events'
-import { useStatus } from '@/api/hooks'
-import { useModeStore } from '@/api/mode'
+import { useChain, useSettings, useStatus } from '@/api/hooks'
 import { Button } from '@/components/ui/button'
+import { describeExpiry } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { KillSwitch } from './KillSwitch'
 import { ModeBadge } from './ModeBadge'
@@ -47,9 +47,15 @@ function ThemeToggle() {
 
 export function AppShell() {
   const { data: status } = useStatus()
+  const { data: chain } = useChain()
+  const { data: settings } = useSettings()
   const { status: socket } = useEvents()
-  const mock = useModeStore((s) => s.mock)
-  const reason = useModeStore((s) => s.reason)
+  const selection = chain?.expiry_selection ?? settings?.strategy.expiry_selection ?? null
+  const expiryLabel = chain
+    ? describeExpiry(chain.expiry, selection)
+    : selection
+      ? `${selection}, chain not loaded`
+      : null
 
   return (
     <div className="flex h-screen min-w-[1280px] overflow-hidden bg-background text-foreground">
@@ -83,14 +89,10 @@ export function AppShell() {
             <span
               className={cn(
                 'inline-block size-2 rounded-full',
-                socket === 'open' || socket === 'mock'
-                  ? 'bg-profit'
-                  : socket === 'connecting'
-                    ? 'bg-amber'
-                    : 'bg-loss'
+                socket === 'open' ? 'bg-profit' : socket === 'connecting' ? 'bg-amber' : 'bg-loss'
               )}
             />
-            events {socket === 'mock' ? 'simulated' : socket}
+            events {socket}
           </div>
           <div>
             OpenAlgo{' '}
@@ -100,24 +102,43 @@ export function AppShell() {
           </div>
           <div>analyzer {status?.openalgo.analyzer_mode ? 'on' : 'off'}</div>
         </div>
+        <a
+          href="https://marketcalls.github.io/openalgo-charts/"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-2 border-t px-3 py-2.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          title="OpenAlgo Charts documentation"
+        >
+          <span
+            aria-hidden="true"
+            className="inline-block size-6 shrink-0 bg-current"
+            style={{
+              maskImage: 'url(/openalgo-mark.svg)',
+              WebkitMaskImage: 'url(/openalgo-mark.svg)',
+              maskSize: 'contain',
+              WebkitMaskSize: 'contain',
+              maskRepeat: 'no-repeat',
+              WebkitMaskRepeat: 'no-repeat',
+              maskPosition: 'center',
+              WebkitMaskPosition: 'center',
+            }}
+          />
+          <span>Charts by OpenAlgo Charts</span>
+        </a>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-4 border-b px-4">
           <ModeBadge status={status} />
           <SessionClock session={status?.session} compact className="w-[420px]" />
+          {expiryLabel && (
+            <span
+              className="rounded-md border px-2 py-1 text-[11px] text-muted-foreground"
+              title="Current expiry the strategy trades"
+            >
+              Expiry <span className="tabular font-medium text-foreground">{expiryLabel}</span>
+            </span>
+          )}
           <div className="ml-auto flex items-center gap-2">
-            {mock && (
-              <span
-                className="rounded-md border border-amber/50 bg-amber/10 px-2 py-0.5 text-[11px] font-medium text-amber"
-                title={
-                  reason === 'query'
-                    ? 'mock=1 in the URL'
-                    : 'The backend did not answer GET /api/status; showing generated data'
-                }
-              >
-                mock data
-              </span>
-            )}
             <ThemeToggle />
             <KillSwitch status={status} />
           </div>

@@ -5,8 +5,10 @@ import type { ReplayStep } from '@/api/types'
 import { ActionBadge } from '@/components/common/ActionBadge'
 import { KeyValueGrid } from '@/components/common/KeyValueGrid'
 import { Pnl } from '@/components/common/Pnl'
+import { PremiumSourceBadge } from '@/components/common/PremiumSourceBadge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { fmtNum } from '@/lib/format'
+import { describeStopBasis } from '@/lib/stops'
 import { formatTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { GuardChecklist } from './GuardChecklist'
@@ -47,6 +49,8 @@ export function DecisionPanel({
   const roi = step.prediction.realized_over_implied
   const band = `${(1 - tau).toFixed(2)} to ${(1 + tau).toFixed(2)}`
   const technical = step.technical ?? {}
+  const basis = step.stop_basis ?? step.straddle.stop_basis ?? null
+  const source = step.premium_source ?? step.straddle.premium_source ?? null
   const rates = Object.entries(step.rates_hz ?? {})
 
   return (
@@ -62,7 +66,10 @@ export function DecisionPanel({
             </span>
           ) : null}
         </div>
-        <ActionBadge action={step.action} />
+        <div className="flex items-center gap-2">
+          <PremiumSourceBadge source={source} className="px-1.5 py-0 text-[10px]" />
+          <ActionBadge action={step.action} />
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-x-3 gap-y-2 rounded-md border bg-muted/30 p-2.5 md:grid-cols-7">
@@ -142,6 +149,25 @@ export function DecisionPanel({
               />
             </section>
           </div>
+          {basis && (
+            <section>
+              <h4 className="mb-1.5 text-xs font-medium">Stop basis</h4>
+              <p className="mb-1.5 text-xs text-muted-foreground">{describeStopBasis(basis)}</p>
+              <KeyValueGrid
+                className="md:grid-cols-[auto_1fr_auto_1fr]"
+                data={{
+                  mode: basis.mode,
+                  horizon_minutes: basis.horizon_minutes,
+                  expected_move_points: basis.expected_move_points,
+                  implied_move_points: basis.implied_move_points,
+                  realized_move_points: basis.realized_move_points,
+                  leg_stop_pct_ce: basis.leg_stop_pct.ce,
+                  leg_stop_pct_pe: basis.leg_stop_pct.pe,
+                  combined_stop_pct: basis.combined_stop_pct,
+                }}
+              />
+            </section>
+          )}
           <GuardChecklist guard={step.guard} />
           <section>
             <h4 className="mb-1.5 text-xs font-medium">Population rates (Hz)</h4>

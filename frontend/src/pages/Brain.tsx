@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 import { api } from '@/api/client'
 import { useBrainState, useCircuits } from '@/api/hooks'
-import { useModeStore } from '@/api/mode'
 import { DnGauge, PredictionGauge } from '@/components/brain/Gauges'
 import { Heatmap } from '@/components/brain/Heatmap'
 import { StimulusImage } from '@/components/brain/StimulusImage'
@@ -13,14 +12,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useLatestDecision, useObservationSteps } from '@/hooks/useLatestDecision'
 import { fmtInt, fmtNum } from '@/lib/format'
 import { formatTime } from '@/lib/time'
-import { mockStimulusUrl } from '@/mock/server'
 
 export default function BrainPage() {
   const { data: circuits } = useCircuits()
   const { data: state } = useBrainState()
   const steps = useObservationSteps()
   const { step: latest } = useLatestDecision()
-  const mock = useModeStore((s) => s.mock)
 
   const observations = useMemo(() => {
     if (steps.length > 0) return steps.map((s) => ({ t: s.t, rates_hz: s.rates_hz }))
@@ -30,9 +27,8 @@ export default function BrainPage() {
   const populations = useMemo(() => circuits?.populations.map((p) => p.name), [circuits])
   const decoder = state?.fixed_decoder ?? latest?.fixed_decoder
   const prediction = state?.prediction ?? latest?.prediction
-  const stimulusSrc = mock
-    ? mockStimulusUrl()
-    : latest?.stimulus_png && latest.stimulus_png !== '/api/brain/stimulus.png'
+  const stimulusSrc =
+    latest?.stimulus_png && latest.stimulus_png !== '/api/brain/stimulus.png'
       ? latest.stimulus_png
       : api.stimulusUrl()
 

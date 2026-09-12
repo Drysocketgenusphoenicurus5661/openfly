@@ -5,8 +5,9 @@ decides the bar size the encoders see: one observation per completed bar of
 that interval, timestamp at the bar close, trailing window of `lookback`
 bars (60 needed by the encoders plus warm-up for ATR and return std), INDIAVIX
 known at the session open, the synthetic ATM straddle premium at that minute,
-trading days to expiry and minutes since open. Position fields are flat
-unless the caller overrides them.
+trading days to the selected expiry (settings.strategy.expiry_selection,
+monthly by default) and minutes since open. Position fields are flat unless
+the caller overrides them.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import numpy as np
 
 from openfly.experiments.data import MarketData, interval_minutes, to_bars
 from openfly.experiments.pricer import StraddlePricer
-from openfly.experiments.sessions import SESSION_MINUTES, session_open
+from openfly.experiments.sessions import SESSION_MINUTES, expiry_selection, session_open
 from openfly.interfaces import Bar, MarketObservation
 
 LOOKBACK_BARS = 120
@@ -46,6 +47,7 @@ class ObservationBuilder:
         self.lookback = int(lookback)
         self.vix_window = int(vix_window)
         self.calendar = market.calendar
+        self.expiry_selection = expiry_selection(self.settings, default=self.calendar.selection)
         strategy = self.settings.get("strategy", {}) if isinstance(self.settings, dict) else {}
         self.pricer = pricer or StraddlePricer(
             strike_step=float(strategy.get("strike_step", 50)), calendar=self.calendar, paths=market.paths
@@ -92,7 +94,7 @@ class ObservationBuilder:
     def expiry_for(self, d: date) -> date:
         hit = self._expiry.get(d)
         if hit is None:
-            hit = self.calendar.next_expiry(d)
+            hit = self.calendar.select_expiry(d, self.expiry_selection)
             self._expiry[d] = hit
         return hit
 

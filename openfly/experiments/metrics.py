@@ -75,6 +75,11 @@ def block_bootstrap_accuracy(
     return {"accuracy": acc, "ci": [lo, hi], "p_value": p, "n": int(correct.size)}
 
 
+def _mean_or_none(values) -> float | None:
+    vals = [float(v) for v in values if v is not None and np.isfinite(v)]
+    return float(np.mean(vals)) if vals else None
+
+
 def trade_stats(trades) -> dict:
     n = len(trades)
     if n == 0:
@@ -82,6 +87,7 @@ def trade_stats(trades) -> dict:
             "trades": 0, "stop_hits": 0, "stop_hits_leg": 0, "target_hits": 0, "lock_hits": 0,
             "exit_hits": 0, "square_offs": 0, "win_rate": 0.0, "avg_holding_minutes": 0.0,
             "gross_pnl_per_lot": 0.0, "costs_per_lot": 0.0, "avg_credit_points": 0.0,
+            "mean_leg_stop_pct": None, "mean_combined_stop_pct": None, "mean_expected_move_points": None,
         }
     reasons = [t.exit_reason for t in trades]
     lots = max(1, int(getattr(trades[0], "lots", 1)))
@@ -98,6 +104,11 @@ def trade_stats(trades) -> dict:
         "gross_pnl_per_lot": float(sum(t.gross_inr for t in trades) / lots),
         "costs_per_lot": float(sum(t.cost_inr for t in trades) / lots),
         "avg_credit_points": float(np.mean([t.credit for t in trades])),
+        "mean_leg_stop_pct": float(np.mean([(t.leg_stop_pct_ce + t.leg_stop_pct_pe) / 2.0 for t in trades])),
+        "mean_combined_stop_pct": float(np.mean([t.combined_stop_pct for t in trades])),
+        "mean_expected_move_points": _mean_or_none(
+            [t.stop_basis.get("expected_move_points") for t in trades if isinstance(t.stop_basis, dict)]
+        ),
     }
 
 

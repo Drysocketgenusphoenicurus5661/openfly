@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { useBars, useSettings, useStatus, useStraddle, useWorkerControls } from '@/api/hooks'
 import type { WorkerMode } from '@/api/types'
+import { ChartLegendRow } from '@/components/charts/ChartLegendRow'
 import { PriceChart } from '@/components/charts/PriceChart'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -113,7 +114,7 @@ export default function DashboardPage() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center justify-between text-sm">
-                <span>NIFTY 1 minute with the straddle premium</span>
+                <span>Price and premium</span>
                 <span className="text-xs font-normal text-muted-foreground">
                   {bars ? `${bars.bars.length} bars` : ''}
                   {latest ? `, last observation ${formatTime(latest.t)}` : ''}
@@ -121,6 +122,19 @@ export default function DashboardPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
+              <ChartLegendRow
+                symbol={bars?.symbol ?? 'NIFTY'}
+                exchange={bars?.exchange ?? 'NSE_INDEX'}
+                interval={bars?.interval ?? '1m'}
+                strike={straddle?.in_position ? straddle.strike : (latest?.straddle.strike ?? null)}
+                expiry={straddle?.in_position ? straddle.expiry : null}
+                expirySelection={settings?.strategy.expiry_selection ?? null}
+                premiumSource={
+                  straddle?.in_position
+                    ? straddle.premium_source
+                    : (latest?.premium_source ?? latest?.straddle.premium_source)
+                }
+              />
               <PriceChart
                 bars={bars?.bars ?? []}
                 premium={premium}
@@ -147,7 +161,13 @@ export default function DashboardPage() {
               {latest ? (
                 <DecisionPanel step={latest} straddleNo={straddleNo} title="Decision" />
               ) : (
-                <EmptyState text="No observation yet. Start the worker or wait for the next bar." />
+                <EmptyState
+                  text={
+                    stopped
+                      ? 'Worker stopped. Start it in paper mode to see decisions.'
+                      : 'No observation yet. Waiting for the next bar.'
+                  }
+                />
               )}
             </CardContent>
           </Card>
@@ -155,6 +175,7 @@ export default function DashboardPage() {
         <div className="space-y-4">
           <StraddleCard
             straddle={straddle}
+            expirySelection={settings?.strategy.expiry_selection ?? null}
             straddleNo={
               straddle?.in_position
                 ? straddleNo || enteredToday || undefined

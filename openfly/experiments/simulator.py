@@ -7,14 +7,22 @@ Rules (all from settings.strategy):
   minute (dynamic re-strike); after any exit a fresh straddle may be entered
   once `reentry_cooldown_minutes` have passed, capped by
   `max_entries_per_day` (0 means unlimited);
-- per-leg fixed stops at leg_stop_pct above each leg's entry price (never
-  trailed); on a leg stop either both legs exit ("exit_both") or the other
-  leg keeps running with its own stop until its target, a readout EXIT or
-  the square-off ("hold_other");
+- per-leg stops above each leg's entry price (never trailed); on a leg stop
+  either both legs exit ("exit_both") or the other leg keeps running with
+  its own stop until its target, a readout EXIT or the square-off
+  ("hold_other");
 - on the summed premium: combined stop (when combined_stop_enabled), target,
   and the lock (after the premium has fallen lock_after_pct the stop moves to
   the entry credit);
 - readout EXIT at observation rows; square-off at 15:15.
+
+Stop distances (`stop_mode`): "adaptive" (default) computes them at each
+entry from the expected index move over stop_horizon_minutes, the larger of
+the move the straddle itself prices for that horizon and the recent realized
+move (std of the trailing 60 one-minute log returns x sqrt(horizon) x index),
+translated into a premium rise per leg with Black-Scholes delta and gamma,
+times stop_buffer, clipped to the configured bounds and held for the life of
+that straddle; "fixed" uses leg_stop_pct and stop_pct. See `stop_basis`.
 
 Prices are the minute closes of each leg (recorded chain when stored,
 otherwise synthetic), sold at ltp minus the spread and bought back at ltp
@@ -31,6 +39,7 @@ import pandas as pd
 
 from openfly.experiments.costs import costs_from_settings, round_trip_cost
 from openfly.experiments.quotes import MinuteQuotes
+from openfly.experiments.sessions import SESSION_MINUTES
 
 EXIT_PRIORITY = ("LEG_STOP", "STOP", "TARGET", "LOCK", "EXIT", "SQUARE_OFF", "HORIZON")
 
@@ -48,6 +57,13 @@ class Rules:
     combined_stop_enabled: bool = True
     leg_stop_pct: float = 30.0
     on_leg_stop: str = "hold_other"
+    stop_mode: str = "adaptive"
+    stop_horizon_minutes: int = 60
+    stop_buffer: float = 1.25
+    leg_stop_min_pct: float = 15.0
+    leg_stop_max_pct: float = 80.0
+    combined_stop_min_pct: float = 10.0
+    combined_stop_max_pct: float = 50.0
     trade_start: str = "09:20"
     last_entry: str = "14:30"
     square_off: str = "15:15"
@@ -68,6 +84,13 @@ class Rules:
             combined_stop_enabled=bool(s.get("combined_stop_enabled", True)),
             leg_stop_pct=float(s.get("leg_stop_pct", 30.0)),
             on_leg_stop=str(s.get("on_leg_stop", "hold_other")),
+            stop_mode=str(s.get("stop_mode", "adaptive")),
+            stop_horizon_minutes=int(s.get("stop_horizon_minutes", 60)),
+            stop_buffer=float(s.get("stop_buffer", 1.25)),
+            leg_stop_min_pct=float(s.get("leg_stop_min_pct", 15.0)),
+            leg_stop_max_pct=float(s.get("leg_stop_max_pct", 80.0)),
+            combined_stop_min_pct=float(s.get("combined_stop_min_pct", 10.0)),
+            combined_stop_max_pct=float(s.get("combined_stop_max_pct", 50.0)),
             trade_start=str(s.get("trade_start", "09:20")),
             last_entry=str(s.get("last_entry", "14:30")),
             square_off=str(s.get("square_off", "15:15")),
@@ -120,6 +143,11 @@ class Trade:
     synthetic_fraction: float
     source: str
     leg_stops: int
+    leg_stop_pct_ce: float = 30.0
+    leg_stop_pct_pe: float = 30.0
+    combined_stop_pct: float = 25.0
+    stop_basis: dict = field(default_factory=dict)
+    expiry: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -136,6 +164,68 @@ def square_off_row(quotes: MinuteQuotes, rules: Rules) -> int:
     if row < 0:
         return quotes.n - 1
     return min(row, quotes.n - 1)
+
+
+def stop_basis(quotes: MinuteQuotes, entry_row: int, strike: float, rules: Rules, ce: float, pe: float) -> dict:
+    """Stop percentages for one straddle entered at `entry_row` (held for its life).
+
+    adaptive: m = max(implied, realized) over stop_horizon_minutes, with
+    implied = combined premium x sqrt(horizon / minutes to expiry) and
+    realized = std(trailing 60 one-minute log returns) x sqrt(horizon) x index;
+    leg rise = |delta| x m + 0.5 x gamma x m^2, combined rise = 0.5 x (gamma_ce +
+    gamma_pe) x m^2 + |delta_ce + delta_pe| x m (the straddle's net delta);
+    percent = stop_buffer x rise / price x 100, clipped to the configured bounds.
+    """
+    horizon = int(rules.stop_horizon_minutes)
+    combined = float(ce + pe)
+    if rules.stop_mode != "adaptive":
+        return {
+            "mode": "fixed",
+            "horizon_minutes": horizon,
+            "expected_move_points": None,
+            "implied_move_points": None,
+            "realized_move_points": None,
+            "leg_stop_pct": {"ce": float(rules.leg_stop_pct), "pe": float(rules.leg_stop_pct)},
+            "combined_stop_pct": float(rules.stop_pct),
+        }
+    day = quotes.day
+    spot = float(day.close[entry_row])
+    days = float(quotes.days_to_expiry[entry_row])
+    mte = max(days * SESSION_MINUTES, 1.0)
+    implied = combined * float(np.sqrt(min(1.0, horizon / mte)))
+    closes = quotes.trailing_closes(entry_row, 61)
+    rets = np.diff(np.log(np.clip(closes, 1e-9, None))) if closes.size >= 2 else np.zeros(0)
+    realized = float(np.std(rets) * np.sqrt(horizon) * spot) if rets.size >= 2 else 0.0
+    m = max(implied, realized)
+    g = quotes.pricer.greeks(spot, strike, days, quotes.vix)
+    gamma = g["gamma"] if np.isfinite(g["gamma"]) else 0.0
+    d_ce = g["delta_ce"] if np.isfinite(g["delta_ce"]) else 0.5
+    d_pe = g["delta_pe"] if np.isfinite(g["delta_pe"]) else -0.5
+    rise_ce = abs(d_ce) * m + 0.5 * gamma * m * m
+    rise_pe = abs(d_pe) * m + 0.5 * gamma * m * m
+    rise_comb = gamma * m * m + abs(d_ce + d_pe) * m
+    floor = max(quotes.tick, 1e-6)
+
+    def pct(rise: float, price: float, lo: float, hi: float) -> float:
+        raw = rules.stop_buffer * rise / max(price, floor) * 100.0
+        return float(np.clip(raw, lo, hi))
+
+    return {
+        "mode": "adaptive",
+        "horizon_minutes": horizon,
+        "expected_move_points": float(m),
+        "implied_move_points": float(implied),
+        "realized_move_points": float(realized),
+        "delta_ce": float(d_ce),
+        "delta_pe": float(d_pe),
+        "gamma": float(gamma),
+        "rise_points": {"ce": float(rise_ce), "pe": float(rise_pe), "combined": float(rise_comb)},
+        "leg_stop_pct": {
+            "ce": pct(rise_ce, ce, rules.leg_stop_min_pct, rules.leg_stop_max_pct),
+            "pe": pct(rise_pe, pe, rules.leg_stop_min_pct, rules.leg_stop_max_pct),
+        },
+        "combined_stop_pct": pct(rise_comb, combined, rules.combined_stop_min_pct, rules.combined_stop_max_pct),
+    }
 
 
 def run_trade(
@@ -156,16 +246,21 @@ def run_trade(
     call, put, synthetic = quotes.straddle_path(strike)
     ce, pe = float(call[entry_row]), float(put[entry_row])
     credit = ce + pe
-    leg_mult = 1.0 + rules.leg_stop_pct / 100.0
-    stop_mult = 1.0 + rules.stop_pct / 100.0
+    basis = stop_basis(quotes, entry_row, strike, rules, ce, pe)
+    leg_mult_ce = 1.0 + basis["leg_stop_pct"]["ce"] / 100.0
+    leg_mult_pe = 1.0 + basis["leg_stop_pct"]["pe"] / 100.0
+    stop_mult = 1.0 + basis["combined_stop_pct"] / 100.0
     target_mult = 1.0 - rules.target_pct / 100.0
     lock_mult = 1.0 - rules.lock_after_pct / 100.0
+
+    def finish(call_row, call_exit, put_row, put_exit, call_reason, put_reason, exit_reason, leg_stops):
+        return _finish(quotes, strike, entry_row, ce, pe, call_row, call_exit, put_row, put_exit,
+                       call_reason, put_reason, exit_reason, synthetic, rules, leg_stops, basis)
 
     r0 = entry_row + 1
     if r0 > last_row:
         # Nothing to walk: exit at the entry row (degenerate window).
-        return _finish(quotes, strike, entry_row, ce, pe, entry_row, ce, entry_row, pe, "SQUARE_OFF", "SQUARE_OFF",
-                       "SQUARE_OFF", synthetic, rules, 0)
+        return finish(entry_row, ce, entry_row, pe, "SQUARE_OFF", "SQUARE_OFF", "SQUARE_OFF", 0)
     cs = call[r0 : last_row + 1]
     ps = put[r0 : last_row + 1]
     comb = cs + ps
@@ -174,8 +269,8 @@ def run_trade(
     if exit_rows is not None:
         exit_mask = np.asarray(exit_rows, dtype=bool)[r0 : last_row + 1]
 
-    t_call = _first(cs >= ce * leg_mult)
-    t_put = _first(ps >= pe * leg_mult)
+    t_call = _first(cs >= ce * leg_mult_ce)
+    t_put = _first(ps >= pe * leg_mult_pe)
     t_stop = _first(comb >= credit * stop_mult) if rules.combined_stop_enabled else n
     t_target = _first(comb <= credit * target_mult)
     t_lock_trig = _first(comb <= credit * lock_mult)
@@ -202,20 +297,19 @@ def run_trade(
             other = horizon_reason if t_leg == t_end else "LEG_STOP_OTHER"
             reason_c = "LEG_STOP" if call_stopped else other
             reason_p = "LEG_STOP" if put_stopped else other
-            return _finish(quotes, strike, entry_row, ce, pe, row, float(call[row]), row, float(put[row]),
-                           reason_c, reason_p, "LEG_STOP", synthetic, rules, leg_stops)
+            return finish(row, float(call[row]), row, float(put[row]), reason_c, reason_p, "LEG_STOP", leg_stops)
         # hold_other: the stopped leg leaves, the other continues on its own rules.
         if call_stopped:
-            keep, keep_entry, kept_name = ps, pe, "put"
+            keep, keep_entry, keep_mult, kept_name = ps, pe, leg_mult_pe, "put"
         else:
-            keep, keep_entry, kept_name = cs, ce, "call"
+            keep, keep_entry, keep_mult, kept_name = cs, ce, leg_mult_ce, "call"
         seg = slice(t_leg + 1, n)
         k = keep[seg]
         m = k.size
         if m == 0:
             other_row, other_price, other_reason = row, float(keep[t_leg]), "SQUARE_OFF"
         else:
-            u_stop = _first(k >= keep_entry * leg_mult)
+            u_stop = _first(k >= keep_entry * keep_mult)
             u_target = _first(k <= keep_entry * target_mult)
             u_exit = _first(exit_mask[seg]) if exit_mask is not None else m
             u_end = m - 1
@@ -232,10 +326,8 @@ def run_trade(
             other_row = r0 + t_leg + 1 + u
             other_price = float(k[u])
         if kept_name == "put":
-            return _finish(quotes, strike, entry_row, ce, pe, row, float(call[row]), other_row, other_price,
-                           "LEG_STOP", other_reason, "LEG_STOP", synthetic, rules, leg_stops)
-        return _finish(quotes, strike, entry_row, ce, pe, other_row, other_price, row, float(put[row]),
-                       other_reason, "LEG_STOP", "LEG_STOP", synthetic, rules, leg_stops)
+            return finish(row, float(call[row]), other_row, other_price, "LEG_STOP", other_reason, "LEG_STOP", leg_stops)
+        return finish(other_row, other_price, row, float(put[row]), other_reason, "LEG_STOP", "LEG_STOP", leg_stops)
 
     if t_first == t_stop:
         reason = "STOP"
@@ -248,12 +340,11 @@ def run_trade(
     else:
         reason = horizon_reason
     row = r0 + t_first
-    return _finish(quotes, strike, entry_row, ce, pe, row, float(call[row]), row, float(put[row]),
-                   reason, reason, reason, synthetic, rules, leg_stops)
+    return finish(row, float(call[row]), row, float(put[row]), reason, reason, reason, leg_stops)
 
 
 def _finish(quotes, strike, entry_row, ce, pe, call_row, call_exit, put_row, put_exit, call_reason, put_reason,
-            exit_reason, synthetic, rules: Rules, leg_stops: int) -> Trade:
+            exit_reason, synthetic, rules: Rules, leg_stops: int, basis: dict) -> Trade:
     day = quotes.day
     exit_row = max(call_row, put_row)
     spread = rules.spread
@@ -288,6 +379,11 @@ def _finish(quotes, strike, entry_row, ce, pe, call_row, call_exit, put_row, put
         synthetic_fraction=frac,
         source="synthetic" if frac >= 1.0 else ("recorded" if frac <= 0.0 else "mixed"),
         leg_stops=int(leg_stops),
+        leg_stop_pct_ce=float(basis["leg_stop_pct"]["ce"]),
+        leg_stop_pct_pe=float(basis["leg_stop_pct"]["pe"]),
+        combined_stop_pct=float(basis["combined_stop_pct"]),
+        stop_basis=basis,
+        expiry=quotes.expiry.isoformat() if hasattr(quotes.expiry, "isoformat") else str(quotes.expiry),
     )
 
 
