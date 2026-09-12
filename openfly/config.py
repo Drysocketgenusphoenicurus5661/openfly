@@ -149,13 +149,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "r8_ame12_excitatory": True,
     },
     "costs": {
+        # Zerodha NFO options calculator, verified 2026-09-12: buy 100, sell 100, qty 400
+        # gives brokerage 40, STT 60, exchange 28.42, GST 12.33, SEBI 0.08, stamp 1, total 141.83.
         "brokerage_per_order": 20.0,
-        "brokerage_pct": 0.03,
-        "stt_sell_pct": 0.1,
-        "exchange_pct": 0.03503,
+        "brokerage_pct": 0.0,
+        "stt_sell_pct": 0.15,
+        "exchange_pct": 0.03553,
         "sebi_pct": 0.0001,
         "stamp_buy_pct": 0.003,
+        "stamp_round_to_rupee": True,
         "gst_pct": 18.0,
+        "gst_on_sebi": True,
     },
     "openalgo": {
         "host": "http://127.0.0.1:5000",
