@@ -136,7 +136,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "index_move_veto_pct": 0.3,
     },
     "neural": {
-        "neural_ms": 200.0,
+        "neural_ms": 100.0,
         "live_interval": "5m",
         "replay_interval": "1m",
         "bar_interval": "5m",

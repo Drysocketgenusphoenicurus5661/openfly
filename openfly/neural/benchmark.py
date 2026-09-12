@@ -14,6 +14,8 @@ REPORT_POPULATIONS = ("R1-R6", "R8", "lamina", "KC", "MBON", "DN", "central_comp
 
 OBSERVATIONS_PER_PASS = 21_000
 BUDGET_HOURS = 6.0
+OBSERVATIONS_PER_DAY_1M = 375  # one observation per 1 minute bar, 09:15 to 15:30
+DEFAULT_WARMUP_MS = 500.0  # activity keeps building for about 500 ms after onset
 
 
 def uniform_stimulus(brain: Brain, luminance: float, pulses: tuple = ()) -> Stimulus:
@@ -25,7 +27,7 @@ def uniform_stimulus(brain: Brain, luminance: float, pulses: tuple = ()) -> Stim
 
 
 def benchmark(
-    brain: Brain, neural_ms: float = 500.0, warmup_ms: float = 100.0
+    brain: Brain, neural_ms: float = 500.0, warmup_ms: float = DEFAULT_WARMUP_MS
 ) -> list[dict[str, Any]]:
     """Run each uniform field from a fresh state; warm-up is untimed."""
     rows = []
@@ -68,11 +70,19 @@ def recommend_neural_ms(
     budget_per_obs = hours * 3600.0 / observations
     raw = 100.0 * budget_per_obs / worst if worst > 0 else float("inf")
     rounded = float(int(raw // 10) * 10)
+    recommended = max(10.0, min(rounded, 1000.0))
+    per_100 = worst / 100.0
     return {
         "worst_seconds_per_100ms": worst,
         "budget_seconds_per_observation": budget_per_obs,
         "max_neural_ms": raw,
-        "recommended_neural_ms": max(10.0, min(rounded, 1000.0)),
+        "recommended_neural_ms": recommended,
+        "seconds_per_observation_at_recommended": per_100 * recommended,
+        "hours_per_pass_at_recommended": per_100 * recommended * observations / 3600.0,
+        "seconds_per_1m_day_at_recommended": per_100 * recommended * OBSERVATIONS_PER_DAY_1M,
+        "seconds_per_observation_at_200ms": per_100 * 200.0,
+        "hours_per_pass_at_200ms": per_100 * 200.0 * observations / 3600.0,
+        "seconds_per_1m_day_at_200ms": per_100 * 200.0 * OBSERVATIONS_PER_DAY_1M,
     }
 
 

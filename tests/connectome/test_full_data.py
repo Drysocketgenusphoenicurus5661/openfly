@@ -103,11 +103,27 @@ def test_white_field_observation(brain):
     kc = res.counts[brain.populations["KC"]].sum()
     for _ in range(4):
         kc += brain.observe(uniform(brain, 1.0), 200.0).counts[brain.populations["KC"]].sum()
-    if kc == 0:
-        pytest.xfail(
-            "measured: a uniform white field does not propagate past the distal medulla under the "
-            "transmitter sign rule, so Kenyon cells stay silent (documented in docs/neural.md)"
-        )
+    assert kc > 0  # requires the R8 to aMe12 excitatory assumption (on by default)
+
+
+def test_r8_ame12_assumption_on_real_graph(brain):
+    from openfly.neural.brain import Brain, r8_ame12_edges
+
+    edges = r8_ame12_edges(brain._graph)
+    assert len(edges) == 390
+    assert brain.parameters()["r8_ame12_edges"] == 390
+    assert np.all(brain._graph["weight"][edges] < 0)
+    assert np.all(brain.kernel.weight[edges] > 0)
+    assert brain.kernel.weight[edges].sum() == pytest.approx(577.5, abs=0.01)
+    off = Brain(r8_ame12_excitatory=False)
+    assert np.all(off.kernel.weight[edges] < 0)
+    assert off.graph_hashes() == brain.graph_hashes()
+    ame12 = np.flatnonzero(brain.types == "aMe12")
+    assert len(ame12) == 6
+    off.reset()
+    assert off.observe(uniform(off, 1.0), 300.0).counts[ame12].sum() == 0
+    brain.reset()
+    assert brain.observe(uniform(brain, 1.0), 300.0).counts[ame12].sum() > 0
 
 
 def test_pam11_pulse_produces_pam11_spikes(brain):

@@ -5,7 +5,8 @@ Ryzen 7 7700, 32 GB, Windows 11, Python 3.12, numpy 2.4.6, numba 0.67).
 This document describes the compiled graph, the kernel, the Brain API and
 the numbers measured on the real MaleCNS v1.0 data. Sections 6 and 7 of
 `PLAN.md` are the specification; where the measured behaviour differs from
-what the plan expected, this document says so.
+what the plan expected, this document says so, and section 4 records the
+one declared assumption added on top of the plan.
 
 ## 1. Data pipeline (openfly/connectome)
 
@@ -149,7 +150,32 @@ sizes); `restore` refuses a checkpoint whose metadata differs. A
 full-brain checkpoint is 1.3 MB, written in 0.25 s and restored in 0.02
 s, and the run continues bit-identically after a restore.
 
-## 4. Plastic arm (openfly/neural/plasticity.py)
+## 4. Declared assumption: R8 drives aMe12 (excitatory)
+
+`Brain(r8_ame12_excitatory=True)`, settings key `neural.r8_ame12_excitatory`,
+default on; CLI switch `--r8-ame12 on|off` on `benchmark`, `circuits` and
+`observe-test`.
+
+Under the transmitter sign rule every R8 output is inhibitory (histamine).
+The six aMe12 accessory medulla neurons receive 390 edges (2,100 contacts,
+weight sum -577.5 mV) from R8 cells of every subtype (R8p 260, R8y 27, R8d
+6, R8_unclear 97) and make 191 synapses (weight sum +491 mV) onto Kenyon
+cells, mostly KCg-d, plus outputs to Tm37, Tm30, Cm6, aMe4 and further
+projection neurons. With the sign rule as measured, aMe12 is silenced and
+no visual signal reaches the mushroom body or the central brain (section
+6). The published circuit finding is that R8 photoreceptors drive aMe12
+(Nature 2023, https://doi.org/10.1038/s41586-023-06681-6), so OpenFly
+treats those 390 edges as net excitatory: at Brain construction the
+weights are copied and the sign of exactly those edges is flipped to
+positive. The compiled graph and its hashes are untouched; `parameters()`
+records the flag, the edge count and the SHA-256 of the edge index array
+and of the resulting weights, and `provenance()["assumptions"]` carries
+the full record including the weight sums before and after and the
+citation. A checkpoint made with the flag on is refused by a brain with
+it off. `Brain(r8_ame12_excitatory=False)` reproduces the pure sign-rule
+model for controls.
+
+## 5. Plastic arm (openfly/neural/plasticity.py)
 
 Off by default; `Brain(plastic=True)` enables it on the 7,835 edges from
 Kenyon cells onto MBON07 and MBON11. Rule per 10 ms bin from actual spike
@@ -163,41 +189,21 @@ brain works on its own copy of the weights so `graph_hashes()` always
 describes the compiled graph. Modulatory neurons still deliver nothing
 through the kernel; only this rule uses their spikes.
 
-## 5. Measured behaviour on the real graph
+## 6. Measured behaviour on the real graph
 
-Benchmark (`uv run openfly benchmark --neural-ms 500`, fresh state, 100 ms
-untimed warm-up, single core):
+All numbers: single core, fresh state per stimulus, assumption of section
+4 on unless stated. The runs are deterministic: repeated runs give the
+same spike counts to the last spike.
 
-| Stimulus | wall s per 100 ms neural | spikes per s | neurons spiking | active list |
-| --- | --- | --- | --- | --- |
-| dark | 0.25 to 0.26 | 286,000 | 7,900 | 8,600 |
-| mid-grey | 0.32 to 0.35 | 551,000 | 10,400 | 12,600 |
-| white | 0.32 to 0.37 | 683,000 | 10,100 | 12,100 |
+### 6.1 Without the assumption (pure sign rule, `--r8-ame12 off`)
 
-The ranges are two runs, one on an idle machine and one while other
-processes were busy. Recommendation: with a worst case of 0.37 s per 100
-ms and a budget of 1.03 s per observation (21,000 observations in 6
-hours), the largest neural time per 5 minute bar is about 270 ms (320 ms
-on an idle machine). The settings default of 200 ms costs 0.65 to 0.75 s
-per observation, or about 4 to 4.4 hours per pass, and leaves headroom
-for encoder and readout work, so 200 ms is the recommendation; do not go
-above 250 ms if the pass must fit in 6 hours.
-
-`uv run openfly observe-test` (white field, 200 ms per observation):
-133,588 to 137,375 spikes per observation, R1-R6 about 115 Hz, lamina
-about 25 Hz, Kenyon cells 0 spikes, DN 0.1 Hz (DNp20 left, DNp20 right and
-both DNpe017 fire; almost no other descending neuron does). A PAM11 pulse
-of 20 mV for 200 ms gives 330 PAM11 spikes on all 15 cells; a PPL101
-pulse gives 44 spikes on both cells.
-
-Finding that differs from the plan's expectation: under the specified
-constants a uniform field, a half field, a moving bar pattern and
-white-dark flicker all stay in the lamina and distal medulla. After 1 s
-of white field 6,528 optic lobe intrinsic neurons spike (mostly L1, L3,
-L5, L2 and the wide-field Dm12, Dm18, Dm20 cells), 14 visual projection
-neurons, 3 central brain neurons and no Kenyon cell. The reasons are
-quantitative, not a kernel defect (the kernel matches the brute-force
-reference exactly):
+Under the specified constants a uniform field, a half field, a moving bar
+pattern and white-dark flicker all stay in the lamina and distal medulla.
+After 1 s of white field 6,528 optic lobe intrinsic neurons spike (mostly
+L1, L3, L5, L2 and the wide-field Dm12, Dm18, Dm20 cells), 14 visual
+projection neurons, 3 central brain neurons and no Kenyon cell. The
+reasons are quantitative, not a kernel defect (the kernel matches the
+brute-force reference exactly):
 
 - L1 is glutamatergic and therefore inhibitory under the sign rule, and
   with its 12 mV tonic drive it is the largest input to the columnar
@@ -207,21 +213,74 @@ reference exactly):
   of the medulla.
 - Even the excitatory input alone is small against the 7 mV gap: 430
   mV.spikes per second onto Mi1 is a mean depolarization of about 2 mV.
-- T4, T5, LC and LPLC cells receive essentially nothing, so the projection
-  neurons that feed the central brain and the visual Kenyon cells are
-  silent.
+- The one strong visual route into the central brain, R8 to aMe12 to the
+  KCg-d Kenyon cells, is cut because the histaminergic R8 outputs count
+  as inhibitory (section 4).
 
-Consequences for the other modules: with encoders A, B and C as planned,
-the reservoir features from DN, MBON and random2000 will be almost all
-zero under the frozen weights; the fixed decoder (DNp20 left and right,
-DNpe017) does receive signal. If the project wants central brain activity
-it must change a declared constant (for example the mV per contact, the
-lamina drive or the sign treatment of glutamate) and record it in
-provenance; this module does not do that silently. The full-data test for
-Kenyon cell spikes on a white field is marked expected-to-fail with this
-reason.
+Cost in this regime: 0.25 s (dark) to 0.37 s (white) of wall time per
+100 ms of neural time, 286,000 to 683,000 spikes per second, 8,600 to
+12,600 neurons on the active list.
 
-## 6. Tests
+### 6.2 With the assumption (default)
+
+`uv run openfly observe-test --neural-ms 500` (white field): KC spikes per
+observation 1,961, 4,615, 4,439 (1,295 to 1,461 of the 4,064 cells), KC
+about 2.2 Hz sustained, MBON 250 to 762 spikes, DN 1,864 to 5,251
+(about 8 Hz sustained), central complex 5,907 to 13,684, random2000 2,444
+to 11,658 per 500 ms; total spikes rise from 406,000 in the first 500 ms
+to 609,000 once sustained. Activity keeps building for about 500 ms after
+onset, so at 200 ms per observation the first two observations carry only
+6 and 4 KC spikes and the third 2,934; the state carries over, so a
+sequence of observations settles into the sustained regime after about
+half a second of neural time. A PAM11 pulse of 20 mV for 200 ms gives 323
+to 325 PAM11 spikes on all 15 cells and a PPL101 pulse 59 to 99 spikes on
+both cells. Wall time in the sustained regime is about 0.9 s per 100 ms
+of neural time on a white field (4.4 s per 500 ms observation), against
+0.5 s per 100 ms during the first 500 ms.
+
+Benchmark (`uv run openfly benchmark --neural-ms 500`, 500 ms untimed
+warm-up so the timed window is the sustained regime):
+
+| Stimulus | assumption | wall s per 100 ms neural | spikes per s | neurons spiking | active list | KC Hz | MBON Hz | DN Hz | CX Hz | random2000 Hz |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| dark | on | 0.24 | 285,000 | 7,900 | 9,100 | 0 | 0 | 0 | 0 | 0 |
+| mid-grey | on | 0.89 | 1,068,000 | 21,700 | 19,000 | 2.1 | 13.7 | 7.8 | 9.1 | 11.5 |
+| white | on | 0.88 | 1,205,000 | 21,600 | 19,700 | 2.3 | 15.7 | 7.6 | 9.3 | 11.6 |
+| dark | off | 0.25 | 285,000 | 7,900 | 9,100 | 0 | 0 | 0 | 0 | 0 |
+| mid-grey | off | 0.31 | 549,000 | 10,300 | 12,400 | 0 | 0 | 0.1 | 0 | 0 |
+| white | off | 0.31 | 683,000 | 10,100 | 12,200 | 0 | 0 | 0.1 | 0 | 0 |
+
+The dark field is identical in both models because no R8 cell fires. With
+the assumption on, the benchmark's own recommendation line reads: worst
+case 0.889 s per 100 ms, ceiling 116 ms per bar for 21,000 observations
+in 6 hours.
+
+### 6.3 Neural time per bar
+
+The kernel is single-threaded, so cost is linear in neural time: about
+0.009 s of wall time per ms of neural time in the sustained white-field
+regime, 0.0025 in the dark.
+
+| neural_ms | s per observation (worst) | 21,000 observation pass (5 minute bars) | one day of 1 minute bars (375 observations) | 400 days of 1 minute bars |
+| --- | --- | --- | --- | --- |
+| 50 | 0.45 | 2.6 h | 2.8 min | 19 h |
+| 100 | 0.9 | 5.3 h | 5.6 min | 37 h |
+| 200 | 1.8 | 10.5 h | 11 min | 75 h |
+
+Recommendation: 100 ms per bar. It keeps a 21,000 observation 5 minute
+pass under the 6 hour budget (the ceiling is about 110 ms) and costs
+about 6 minutes per trading day on 1 minute bars, which is far inside
+real time for the live worker (one observation per minute, 0.9 s each).
+The settings default of 200 ms would need 10.5 hours per 5 minute pass
+and 75 hours for 400 days of 1 minute bars, so it should be lowered to
+100 unless the pass can be split: independent arms (encoders, readouts,
+frozen versus plastic) are separate single-threaded processes and this
+machine has 8 cores, so 6 to 8 passes can run side by side at about 0.6
+GB each. Note that with 100 ms per observation the network is always in
+its onset regime relative to each new stimulus, but the state carries
+across observations, so the sustained regime is reached after 5 bars.
+
+## 7. Tests
 
     uv run pytest tests/neural tests/connectome -q
     OPENFLY_FULL_TEST=1 uv run pytest tests/connectome -q

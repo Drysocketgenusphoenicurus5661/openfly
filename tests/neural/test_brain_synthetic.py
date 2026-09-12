@@ -41,6 +41,7 @@ def synthetic_graph():
     add("DNa02", "descending_neuron", soma="R", k=2)
     add("PFNa", "cb_intrinsic", cls="CX", soma="L", k=3)
     add("SMP001", "cb_intrinsic", soma="L", k=12)
+    add("aMe12", "visual_projection", soma="L", k=2)
     n = len(cells)
     types = np.array([c[0] for c in cells], dtype=np.str_)
     superclass = np.array([c[1] for c in cells], dtype=np.str_)
@@ -61,12 +62,17 @@ def synthetic_graph():
     mbon07 = where("MBON07")
     mbon11 = where("MBON11")
     dn = np.flatnonzero(superclass == "descending_neuron")
+    ame12 = where("aMe12")
 
     edges = []
     for i, r in enumerate(r16_all):
         edges.append((r, lamina[i % len(lamina)], -0.275 * 20))
     for i, r in enumerate(r8):
         edges.append((r, lamina[(i + 2) % len(lamina)], -0.275 * 10))
+        # histaminergic R8 onto aMe12: inhibitory under the sign rule, flipped by the assumption
+        edges.append((r, ame12[i % len(ame12)], -0.275 * 60))
+    for i, a in enumerate(ame12):
+        edges.append((a, kc[(i + 3) % len(kc)], 0.275 * 100))
     # A jump of g by w mV peaks the membrane at about 0.158 w, so a synthetic
     # path needs a few hundred contacts to fire its target from rest.
     for i, lam in enumerate(lamina):
@@ -322,6 +328,43 @@ def test_plastic_arm_changes_kc_to_mbon_weights(graph_file):
     other.restore(str(path))
     assert np.array_equal(other.plasticity.factor, p.factor)
     assert np.array_equal(other.kernel.weight, brain.kernel.weight)
+
+
+def test_r8_ame12_assumption_flips_edges_on_a_copy(graph_file, tmp_path):
+    from openfly.neural.brain import r8_ame12_edges
+
+    g = load_graph(graph_file)
+    edges = r8_ame12_edges(g)
+    assert len(edges) == 4
+    assert np.all(g["weight"][edges] < 0)
+    on = Brain(graph_path=graph_file, check_counts=False)  # default: assumption on
+    off = Brain(graph_path=graph_file, check_counts=False, r8_ame12_excitatory=False)
+    assert np.all(on.kernel.weight[edges] > 0)
+    assert np.all(off.kernel.weight[edges] < 0)
+    assert np.all(on._graph["weight"][edges] < 0)  # compiled graph untouched
+    assert on.graph_hashes() == off.graph_hashes()
+    others = np.setdiff1d(np.arange(len(g["weight"])), edges)
+    assert np.array_equal(on.kernel.weight[others], off.kernel.weight[others])
+    p_on, p_off = on.parameters(), off.parameters()
+    assert p_on["r8_ame12_excitatory"] is True and p_off["r8_ame12_excitatory"] is False
+    assert p_on["r8_ame12_edges"] == 4 and p_off["r8_ame12_edges"] == 4
+    assert p_on["r8_ame12_edges_sha256"] == p_off["r8_ame12_edges_sha256"]
+    assert p_on["r8_ame12_weights_sha256"] != p_off["r8_ame12_weights_sha256"]
+    a = on.provenance()["assumptions"]["r8_ame12_excitatory"]
+    assert (
+        a["enabled"]
+        and a["edges"] == 4
+        and a["weight_sum_before_mv"] < 0 < a["weight_sum_after_mv"]
+    )
+    assert a["citation"].startswith("https://doi.org/")
+    ame12 = np.flatnonzero(on.types == "aMe12")
+    stim = white(on)
+    assert on.observe(stim, 300.0).counts[ame12].sum() > 0
+    assert off.observe(stim, 300.0).counts[ame12].sum() == 0
+    path = tmp_path / "on.npz"
+    on.checkpoint(str(path))
+    with pytest.raises(ValueError, match="r8_ame12_excitatory"):
+        off.restore(str(path))
 
 
 def test_frozen_brain_never_changes_weights(brain):

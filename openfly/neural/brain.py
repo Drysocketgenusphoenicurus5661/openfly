@@ -23,6 +23,14 @@ constant, photoreceptors 30 x L / (h + L) mV with half-saturation h
 constant to a population's drive for the first `duration_ms` of the
 observation. The simulation runs in 10 ms bins so pulses can end mid
 observation; the clock continues across observations.
+
+Declared assumption (Brain(r8_ame12_excitatory=True), settings key
+neural.r8_ame12_excitatory, default on): the 390 edges from R8
+photoreceptors onto the six aMe12 cells are made excitatory on the brain's
+own copy of the weights, because R8 drives aMe12 in vivo
+(https://doi.org/10.1038/s41586-023-06681-6) while the histamine sign rule
+would silence it. Without it no visual signal reaches the Kenyon cells.
+Recorded in parameters() and provenance() with the edge count and hashes.
 """
 
 from __future__ import annotations
@@ -58,6 +66,16 @@ CENTRAL_BRAIN_PREFIX = "cb_"
 LAMINA_ALL_TYPES = ("L1", "L2", "L3", "L4", "L5")
 PHOTORECEPTOR_PREFIXES = ("R1-R6", "R7", "R8")
 CHECKPOINT_VERSION = 1
+
+# Declared modeling assumption: R8 photoreceptors drive the aMe12 accessory medulla
+# neurons (Nature 2023, https://doi.org/10.1038/s41586-023-06681-6). The transmitter
+# sign rule makes every R8 output inhibitory (histamine), which silences aMe12 and,
+# through its 191 synapses onto Kenyon cells, the whole downstream brain. With the
+# flag on, the R8 to aMe12 edges are made excitatory on the brain's own copy of the
+# weights; the compiled graph and its hashes stay pristine.
+R8_AME12_SOURCE_PREFIX = "R8"
+R8_AME12_TARGET_TYPE = "aMe12"
+R8_AME12_CITATION = "https://doi.org/10.1038/s41586-023-06681-6"
 
 EXPECTED_POPULATION_SIZES = {
     "PAM11": 15,
@@ -168,6 +186,23 @@ def build_populations(g: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return pops
 
 
+def r8_ame12_edges(g: dict[str, np.ndarray]) -> np.ndarray:
+    """Edge indices from any R8 photoreceptor type onto aMe12 cells (sorted)."""
+    types = g["type"].astype(str)
+    ptr = g["ptr"]
+    post = g["post"]
+    sources = np.flatnonzero(np.char.startswith(types, R8_AME12_SOURCE_PREFIX))
+    is_target = types == R8_AME12_TARGET_TYPE
+    out = []
+    for i in sources:
+        e = np.arange(ptr[i], ptr[i + 1], dtype=np.int64)
+        if len(e):
+            sel = is_target[post[e]]
+            if sel.any():
+                out.append(e[sel])
+    return np.concatenate(out) if out else np.zeros(0, dtype=np.int64)
+
+
 def check_population_sizes(
     pops: dict[str, np.ndarray], expected: dict[str, int] | None = None
 ) -> None:
@@ -195,9 +230,11 @@ class Brain:
         plasticity_config: PlasticityConfig | None = None,
         check_counts: bool = True,
         graph: dict[str, np.ndarray] | None = None,
+        r8_ame12_excitatory: bool = True,
     ):
         if half_saturation <= 0:
             raise ValueError("half_saturation must be positive")
+        self.r8_ame12_excitatory = bool(r8_ame12_excitatory)
         self.graph_path = (
             str(Path(graph_path) if graph_path else PATHS.graph) if graph is None else "<in-memory>"
         )
@@ -213,9 +250,10 @@ class Brain:
             check_population_sizes(self.populations)
         is_kc = np.zeros(self.n, dtype=np.uint8)
         is_kc[self.populations["KC"]] = 1
-        # A plastic brain rewrites weights in place, so it works on its own copy and
-        # the compiled graph (and its hashes) stays pristine.
-        weight = g["weight"].copy() if self.plastic else g["weight"]
+        # A plastic or sign-corrected brain rewrites weights, so it works on its own
+        # copy and the compiled graph (and its hashes) stays pristine.
+        weight = g["weight"].copy() if (self.plastic or self.r8_ame12_excitatory) else g["weight"]
+        self._r8_ame12 = self._apply_r8_ame12(g, weight)
         self.kernel = Kernel(g["ptr"], g["post"], weight, g["modulatory"], is_kc)
         self.r16 = self.populations["R1-R6"]
         self.r8 = self.populations["R8"]
@@ -235,6 +273,25 @@ class Brain:
                 plasticity_config,
             )
         self._hashes: dict[str, str] | None = None
+
+    def _apply_r8_ame12(self, g: dict[str, np.ndarray], weight: np.ndarray) -> dict[str, Any]:
+        """Make the R8 to aMe12 edges excitatory on `weight` if the flag is on."""
+        edges = r8_ame12_edges(g)
+        before = float(g["weight"][edges].sum()) if len(edges) else 0.0
+        if self.r8_ame12_excitatory and len(edges):
+            weight[edges] = np.abs(weight[edges])
+        after = float(weight[edges].sum()) if len(edges) else 0.0
+        return {
+            "enabled": self.r8_ame12_excitatory,
+            "source": f"type starts with {R8_AME12_SOURCE_PREFIX}",
+            "target": f"type == {R8_AME12_TARGET_TYPE}",
+            "edges": int(len(edges)),
+            "edge_index_sha256": sha256_array(edges),
+            "weight_sha256": sha256_array(np.ascontiguousarray(weight[edges])),
+            "weight_sum_before_mv": before,
+            "weight_sum_after_mv": after,
+            "citation": R8_AME12_CITATION,
+        }
 
     # ------------------------------------------------------------------
     # Introspection
@@ -284,6 +341,10 @@ class Brain:
             "plastic": self.plastic,
             "plasticity": self.plasticity.config.as_dict() if self.plasticity else None,
             "random_sample_seed": RANDOM_SAMPLE_SEED,
+            "r8_ame12_excitatory": self.r8_ame12_excitatory,
+            "r8_ame12_edges": self._r8_ame12["edges"],
+            "r8_ame12_edges_sha256": self._r8_ame12["edge_index_sha256"],
+            "r8_ame12_weights_sha256": self._r8_ame12["weight_sha256"],
         }
 
     def provenance(self) -> dict:
@@ -302,6 +363,7 @@ class Brain:
                 "random2000": f"seed {RANDOM_SAMPLE_SEED}, superclass {CENTRAL_BRAIN_PREFIX}* minus photoreceptors and lamina",
                 "modulatory": "no postsynaptic effect in the base model",
             },
+            "assumptions": {"r8_ame12_excitatory": dict(self._r8_ame12)},
             "plasticity_state": self.plasticity.summary() if self.plasticity else None,
             "clock": self.clock,
             "sim_ms": self.sim_ms,
@@ -443,7 +505,7 @@ class Brain:
                 if meta.get("graph_hashes", {}).get(k) != mine["graph_hashes"].get(k)
             )
             problems.append("graph arrays differ: " + ", ".join(changed))
-        for key in ("half_saturation", "plastic", "plasticity"):
+        for key in ("half_saturation", "plastic", "plasticity", "r8_ame12_excitatory"):
             if meta.get("parameters", {}).get(key) != mine["parameters"].get(key):
                 problems.append(
                     f"parameter {key}: checkpoint {meta.get('parameters', {}).get(key)!r}, brain {mine['parameters'].get(key)!r}"

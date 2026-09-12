@@ -16,12 +16,25 @@ def _load_brain(args: argparse.Namespace):
     brain = Brain(
         half_saturation=getattr(args, "half_saturation", 0.5),
         plastic=getattr(args, "plastic", False),
+        r8_ame12_excitatory=getattr(args, "r8_ame12", "on") == "on",
     )
+    corr = brain.provenance()["assumptions"]["r8_ame12_excitatory"]
     print(
-        f"Loaded {brain.n:,} neurons and {brain.edges:,} edges in {time.perf_counter() - t0:.1f} s",
+        f"Loaded {brain.n:,} neurons and {brain.edges:,} edges in {time.perf_counter() - t0:.1f} s; "
+        f"R8 to aMe12 excitatory assumption {'on' if corr['enabled'] else 'off'} ({corr['edges']} edges)",
         flush=True,
     )
     return brain
+
+
+def _add_brain_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--half-saturation", type=float, default=0.5)
+    p.add_argument(
+        "--r8-ame12",
+        choices=("on", "off"),
+        default="on",
+        help="R8 to aMe12 excitatory assumption (default on)",
+    )
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
@@ -38,6 +51,16 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     print(
         f"Worst case {rec['worst_seconds_per_100ms']:.3f} s per 100 ms; budget {rec['budget_seconds_per_observation']:.2f} s per observation "
         f"for 21,000 observations in 6 hours; max neural_ms {rec['max_neural_ms']:.0f}; recommended {rec['recommended_neural_ms']:.0f} ms per bar"
+    )
+    print(
+        f"At {rec['recommended_neural_ms']:.0f} ms: {rec['seconds_per_observation_at_recommended']:.2f} s per observation, "
+        f"{rec['hours_per_pass_at_recommended']:.1f} h per 21,000 observation pass, "
+        f"{rec['seconds_per_1m_day_at_recommended'] / 60:.1f} min per day of 1 minute bars (375 observations)"
+    )
+    print(
+        f"At 200 ms: {rec['seconds_per_observation_at_200ms']:.2f} s per observation, "
+        f"{rec['hours_per_pass_at_200ms']:.1f} h per pass, "
+        f"{rec['seconds_per_1m_day_at_200ms'] / 60:.1f} min per day of 1 minute bars"
     )
     return 0
 
@@ -67,11 +90,17 @@ def cmd_observe_test(args: argparse.Namespace) -> int:
     for i in range(3):
         res = brain.observe(white, args.neural_ms)
         rates = brain.population_rates(res.counts, res.neural_ms)
+        totals = {
+            name: int(res.counts[brain.populations[name]].sum())
+            for name in ("MBON", "DN", "central_complex", "random2000")
+        }
         print(
             f"observation {i + 1}: white field {res.neural_ms:.0f} ms, {res.compute_seconds:.2f} s wall, "
             f"total spikes {int(res.counts.sum()):,}, KC spikes {int(res.counts[kc].sum()):,} "
             f"({int((res.counts[kc] > 0).sum())} of {len(kc)} cells), KC {rates['KC']:.2f} Hz, "
-            f"lamina {rates['lamina']:.1f} Hz, R1-R6 {rates['R1-R6']:.1f} Hz, DN {rates['DN']:.2f} Hz"
+            f"lamina {rates['lamina']:.1f} Hz, R1-R6 {rates['R1-R6']:.1f} Hz, DN {rates['DN']:.2f} Hz; "
+            f"spikes MBON {totals['MBON']:,}, DN {totals['DN']:,}, "
+            f"central_complex {totals['central_complex']:,}, random2000 {totals['random2000']:,}"
         )
     for pop in ("PAM11", "PPL101"):
         idx = brain.populations[pop]
@@ -96,19 +125,23 @@ def register_cli(subparsers: argparse._SubParsersAction) -> None:
         "--neural-ms", type=float, default=500.0, help="neural time per stimulus (default 500)"
     )
     p.add_argument(
-        "--warmup-ms", type=float, default=100.0, help="untimed warm-up per stimulus (default 100)"
+        "--warmup-ms",
+        type=float,
+        default=500.0,
+        help="untimed warm-up per stimulus so the timed window is the sustained regime (default 500)",
     )
-    p.add_argument("--half-saturation", type=float, default=0.5)
+    _add_brain_options(p)
     p.set_defaults(handler=cmd_benchmark)
 
     p = subparsers.add_parser("circuits", help="print population sizes")
+    _add_brain_options(p)
     p.set_defaults(handler=cmd_circuits)
 
     p = subparsers.add_parser(
         "observe-test", help="three white-field observations and dopamine pulses"
     )
     p.add_argument("--neural-ms", type=float, default=200.0)
-    p.add_argument("--half-saturation", type=float, default=0.5)
+    _add_brain_options(p)
     p.add_argument("--plastic", action="store_true", help="enable the KC to MBON plasticity arm")
     p.set_defaults(handler=cmd_observe_test)
 
