@@ -131,7 +131,7 @@ def _print_summary(result: dict) -> None:
         print(f"selected: populations {sel['populations']} alpha {sel['alpha']} tau {sel['tau']} features {sel.get('features')}")
     header = (
         f"{'window':<11}{'net/lot':>10}{'sharpe':>8}{'maxdd':>10}{'trades':>7}{'stop':>5}{'leg':>5}{'tgt':>5}"
-        f"{'legstop%':>9}{'cstop%':>7}{'acc':>7}{'ci':>16}{'p':>7}{'synth':>7}"
+        f"{'legstop%':>9}{'cstop%':>7}{'tgt%':>6}{'acc':>7}{'ci':>16}{'p':>7}{'synth':>7}"
     )
     print(header)
     for w, m in result.get("metrics", {}).items():
@@ -141,6 +141,7 @@ def _print_summary(result: dict) -> None:
             f"{w:<11}{_fmt(m.get('net_pnl_per_lot'), 0):>10}{_fmt(m.get('sharpe'), 2):>8}{_fmt(m.get('max_drawdown'), 0):>10}"
             f"{m.get('trades', 0):>7}{m.get('stop_hits', 0):>5}{m.get('stop_hits_leg', 0):>5}{m.get('target_hits', 0):>5}"
             f"{_fmt(m.get('mean_leg_stop_pct'), 1):>9}{_fmt(m.get('mean_combined_stop_pct'), 1):>7}"
+            f"{_fmt(m.get('mean_target_pct'), 1):>6}"
             f"{_fmt(m.get('accuracy'), 3):>7}{ci_txt:>16}{_fmt(m.get('accuracy_p_value'), 3):>7}{_fmt(m.get('synthetic_fraction'), 2):>7}"
         )
     print("controls (test window):")
@@ -149,7 +150,8 @@ def _print_summary(result: dict) -> None:
             f"  {name:<13}net/lot {_fmt(m.get('net_pnl_per_lot'), 0):>8}  sharpe {_fmt(m.get('sharpe'), 2):>6}  "
             f"trades {m.get('trades', 0):>4}  stop {m.get('stop_hits', 0):>3}  leg {m.get('stop_hits_leg', 0):>3}  "
             f"tgt {m.get('target_hits', 0):>3}  legstop% {_fmt(m.get('mean_leg_stop_pct'), 1)}  "
-            f"cstop% {_fmt(m.get('mean_combined_stop_pct'), 1)}  acc {_fmt(m.get('accuracy'), 3)}"
+            f"cstop% {_fmt(m.get('mean_combined_stop_pct'), 1)}  tgt% {_fmt(m.get('mean_target_pct'), 1)}  "
+            f"acc {_fmt(m.get('accuracy'), 3)}"
         )
     print(f"passed: {result.get('passed')}")
     print(f"verdict: {result.get('verdict')}")

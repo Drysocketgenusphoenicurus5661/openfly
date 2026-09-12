@@ -421,7 +421,7 @@ def test_adaptive_leg_stop_orders_carry_the_adaptive_prices(tmp_path):
     rise = 0.5 * implied + 0.5 * gamma * implied * implied
     assert basis.leg_stop_pct["ce"] == pytest.approx(1.25 * rise / 101.2 * 100, rel=1e-6)
     assert basis.leg_stop_pct["pe"] == pytest.approx(1.25 * rise / 100.1 * 100, rel=1e-6)
-    assert basis.clipped == {"ce": "", "pe": "", "combined": "min"}
+    assert {k: basis.clipped[k] for k in ("ce", "pe", "combined")} == {"ce": "", "pe": "", "combined": "min"}
     legs = {leg.option_type: leg for leg in rig.engine.position.legs.values()}
     assert legs["CE"].stop_price == ceil_to_tick(101.2 * (1 + basis.leg_stop_pct["ce"] / 100))
     assert legs["PE"].stop_price == ceil_to_tick(100.1 * (1 + basis.leg_stop_pct["pe"] / 100))
@@ -431,7 +431,8 @@ def test_adaptive_leg_stop_orders_carry_the_adaptive_prices(tmp_path):
     assert records == {CE: legs["CE"].stop_price, PE: legs["PE"].stop_price}
     snap = rig.engine.state_snapshot()
     assert snap["stop_basis"]["leg_stop_pct"] == {"ce": round(basis.leg_stop_pct["ce"], 2), "pe": round(basis.leg_stop_pct["pe"], 2)}
-    assert snap["stop_basis"]["combined_stop_pct"] == 10.0 and snap["stop_level"] == round(201.3 * 1.10, 2)
+    assert snap["stop_basis"]["combined_stop_pct"] == 3.0 and snap["stop_level"] == round(201.3 * 1.03, 2)
+    assert snap["stop_basis"]["target_mode"] == "fixed" and snap["stop_basis"]["target_pct"] == 40.0
     intents = {r["kind"]: r for r in rig.ledger.intents()}
     assert intents["STOPS"]["reason"] == f"per-leg adaptive stops: ce {basis.leg_stop_pct['ce']:.1f} percent, pe {basis.leg_stop_pct['pe']:.1f} percent"
 

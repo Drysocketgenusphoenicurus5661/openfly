@@ -18,6 +18,24 @@ describe('describeStopBasis', () => {
     )
   })
 
+  it('adds the target and lock when the basis carries them', () => {
+    expect(
+      describeStopBasis({
+        mode: 'adaptive',
+        horizon_minutes: 60,
+        expected_move_points: 49.2,
+        implied_move_points: 49.2,
+        realized_move_points: 31.3,
+        leg_stop_pct: { ce: 15, pe: 16.2 },
+        combined_stop_pct: 3,
+        target_pct: 10.3,
+        lock_after_pct: 5.2,
+      })
+    ).toBe(
+      'Stops sized for a 49 point move over 60 minutes (implied 49, realized 31): call 15 percent, put 16 percent, combined 3 percent; target 10 percent, lock after 5 percent.'
+    )
+  })
+
   it('describes fixed stops', () => {
     expect(
       describeStopBasis({

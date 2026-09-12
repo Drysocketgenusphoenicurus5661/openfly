@@ -139,6 +139,8 @@ export function PriceChart({
   const chartRef = useRef<Chart | null>(null)
   const candlesRef = useRef<SeriesApi | null>(null)
   const premiumRef = useRef<SeriesApi | null>(null)
+  // Invisible series whose two points force the premium scale to cover every level.
+  const rangeRef = useRef<SeriesApi | null>(null)
   const markersRef = useRef<SeriesMarkers | null>(null)
   const legendsRef = useRef<{ price: PaneLegend; premium: PaneLegend } | null>(null)
   const linesRef = useRef<Map<string, PriceLine>>(new Map())
@@ -193,6 +195,16 @@ export function PriceChart({
       },
     })
     premiumRef.current = premiumSeries
+    rangeRef.current = chart.addSeries('line', {
+      paneIndex: 1,
+      style: {
+        color: 'rgba(0,0,0,0)',
+        lineWidth: 1,
+        title: '',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      },
+    })
     chart.setPaneWeight(0, 3)
     chart.setPaneWeight(1, 2)
     chart.setCanvasOptions({ margins: { top: 20, bottom: 14 } })
@@ -224,6 +236,7 @@ export function PriceChart({
       chartRef.current = null
       candlesRef.current = null
       premiumRef.current = null
+      rangeRef.current = null
       markersRef.current = null
       setReady(false)
     }
@@ -308,10 +321,34 @@ export function PriceChart({
     layer.setMarkers(list)
   }, [markers, cursorTime, dark, ready])
 
-  // Levels on the premium pane.
+  // Levels on the premium pane. The invisible range series spans the lowest
+  // and highest level across the whole day so autoscale always shows them.
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !ready) return
+    const range = rangeRef.current
+    if (range) {
+      const prices = (levels ?? []).map((l) => l.price)
+      if (prices.length && chartBars.length) {
+        const first = chartBars[0].time
+        const last = chartBars[chartBars.length - 1].time
+        const lo = Math.min(...prices)
+        const hi = Math.max(...prices)
+        range.setData(
+          first === last
+            ? [
+                { time: first, value: lo },
+                { time: first + 60, value: hi },
+              ]
+            : [
+                { time: first, value: lo },
+                { time: last, value: hi },
+              ]
+        )
+      } else {
+        range.setData([])
+      }
+    }
     const lines = linesRef.current
     const wanted = new Map((levels ?? []).map((l) => [l.id, l]))
     for (const [id, line] of lines) {
@@ -326,10 +363,12 @@ export function PriceChart({
       const dashed = level.kind === 'leg_stop' || level.kind === 'entry'
       // Leg stops are stubs from the right axis, staggered so their pills do not stack.
       const extentFromRight = level.kind === 'leg_stop' ? (level.id.endsWith('CE') ? 0.62 : 0.4) : 1
+      const lineWidth = level.kind === 'stop' || level.kind === 'target' ? 2 : 1
       if (existing) {
         existing.setPrice(level.price)
         existing.setOptions({
           color,
+          lineWidth,
           label: level.price.toFixed(1),
           badge: level.label,
           dashed,
@@ -341,7 +380,7 @@ export function PriceChart({
             id: level.id,
             price: level.price,
             color,
-            lineWidth: 1,
+            lineWidth,
             dashed,
             label: level.price.toFixed(1),
             badge: level.label,
@@ -352,7 +391,7 @@ export function PriceChart({
         lines.set(level.id, line)
       }
     }
-  }, [levels, dark, ready])
+  }, [levels, chartBars, dark, ready])
 
   const hoveredText = hovered ? markerText.get(hovered.id) : null
 

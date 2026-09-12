@@ -141,6 +141,12 @@ export interface Prediction {
   tau?: number
 }
 
+export interface BrainObservation {
+  t: string
+  rates_hz: RatesHz
+  action?: string
+}
+
 export interface BrainState {
   observed_at: string
   neural_ms: number
@@ -151,6 +157,17 @@ export interface BrainState {
   prediction: Prediction
   stimulus_hash: string
   plastic?: PlasticStats | null
+  // Where the observation came from and the image to show for it.
+  stimulus_png?: string | null
+  source?: 'worker' | 'replay' | string
+  replay_id?: string | null
+  step?: number | null
+  // Some backends name the step index step_i.
+  step_i?: number | null
+  action?: string
+  narrative?: string
+  // The last 30 observations, so the heatmap is full on load.
+  history?: BrainObservation[] | null
 }
 
 export interface PlasticStats {
@@ -359,6 +376,7 @@ export type OnLegStop = 'hold_other' | 'exit_both'
 export type PremiumSource = 'recorded' | 'synthetic'
 
 export type StopMode = 'adaptive' | 'fixed'
+export type TargetMode = 'adaptive' | 'fixed'
 
 // How the stops of a straddle were sized (docs/api-spec.md, "Volatility-adaptive stops").
 export interface StopBasis {
@@ -369,6 +387,9 @@ export interface StopBasis {
   realized_move_points: number
   leg_stop_pct: { ce: number; pe: number }
   combined_stop_pct: number
+  // Present when the target is sized from the same expected move.
+  target_pct?: number
+  lock_after_pct?: number
 }
 
 export interface StrategySettings {
@@ -384,6 +405,12 @@ export interface StrategySettings {
   leg_stop_max_pct: number
   combined_stop_min_pct: number
   combined_stop_max_pct: number
+  target_mode: TargetMode
+  target_ratio: number
+  target_min_pct: number
+  target_max_pct: number
+  lock_ratio: number
+  min_hold_minutes: number
   leg_stop_pct: number
   leg_stop_mode: LegStopMode
   on_leg_stop: OnLegStop

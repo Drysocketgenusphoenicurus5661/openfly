@@ -42,6 +42,8 @@ def _fixed_rules() -> Rules:
     """The fixed percentage rules (30 percent per leg, 25 percent combined) these tests are written for."""
     rules = Rules.from_settings(DEFAULT_SETTINGS)
     rules.stop_mode = "fixed"
+    rules.target_mode = "fixed"
+    rules.min_hold_minutes = 0
     return rules
 
 
@@ -119,6 +121,31 @@ def test_readout_exit_and_dynamic_reentry():
     assert trades[1].strike == trades[0].strike  # flat synthetic path keeps the ATM
     rules.max_entries_per_day = 1
     assert len(simulate_day(q, rules, obs, entry_signal=entry, exit_signal=exit_)) == 1
+
+
+def test_min_hold_delays_readout_exit_only():
+    call, put = _flat()
+    q = _quotes_with_paths(call, put)
+    rules = _fixed_rules()
+    rules.min_hold_minutes = 10
+    obs = observation_rows(q, 1)
+    entry = np.zeros(q.n, dtype=bool)
+    exit_ = np.zeros(q.n, dtype=bool)
+    entry[4] = True
+    exit_[[9, 12, 20]] = True  # 5 and 8 minutes old: ignored; 16 minutes old: honoured
+    trades = simulate_day(q, rules, obs, entry_signal=entry, exit_signal=exit_)
+    assert len(trades) == 1 and trades[0].exit_reason == "EXIT" and trades[0].exit_row == 20
+    # exactly min_hold_minutes old is allowed
+    exit_[:] = False
+    exit_[14] = True
+    trades = simulate_day(q, rules, obs, entry_signal=entry, exit_signal=exit_)
+    assert trades[0].exit_row == 14 and trades[0].minutes_held == 10
+    # a target inside the hold window is still immediate
+    call2, put2 = _flat()
+    call2[7:] = 50.0
+    put2[7:] = 60.0
+    t = run_trade(_quotes_with_paths(call2, put2), 4, rules, exit_rows=exit_)
+    assert t.exit_reason == "TARGET" and t.exit_row == 7
 
 
 def test_fixed_entry_reenters_and_random_matches_rows():

@@ -108,19 +108,50 @@ def test_clipping_to_bounds():
 def test_fixed_mode_is_identical_to_the_fixed_percentages():
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     settings["strategy"]["stop_mode"] = "fixed"
+    settings["strategy"]["target_mode"] = "fixed"
     rules = Rules.from_settings(settings)
     q = _quotes(_market(jump=True))
     basis = _basis(q, 160, rules)
     assert basis == {
-        "mode": "fixed", "horizon_minutes": 60, "expected_move_points": None, "implied_move_points": None,
-        "realized_move_points": None, "leg_stop_pct": {"ce": 30.0, "pe": 30.0}, "combined_stop_pct": 25.0,
+        "mode": "fixed", "target_mode": "fixed", "horizon_minutes": 60, "expected_move_points": None,
+        "implied_move_points": None, "realized_move_points": None, "leg_stop_pct": {"ce": 30.0, "pe": 30.0},
+        "combined_stop_pct": 25.0, "target_pct": 40.0, "lock_after_pct": 15.0,
     }
     t = run_trade(q, 160, rules)
-    assert (t.leg_stop_pct_ce, t.leg_stop_pct_pe, t.combined_stop_pct) == (30.0, 30.0, 25.0)
+    assert (t.leg_stop_pct_ce, t.leg_stop_pct_pe, t.combined_stop_pct, t.target_pct, t.lock_after_pct) == (30.0, 30.0, 25.0, 40.0, 15.0)
     # a hand-built fixed rules object gives the same exits as the settings-driven one
-    manual = Rules(stop_mode="fixed", leg_stop_pct=30.0, stop_pct=25.0, costs=rules.costs)
+    manual = Rules(stop_mode="fixed", target_mode="fixed", leg_stop_pct=30.0, stop_pct=25.0, costs=rules.costs)
     t2 = run_trade(q, 160, manual)
     assert (t2.exit_row, t2.exit_reason, t2.pnl_points) == (t.exit_row, t.exit_reason, t.pnl_points)
+
+
+def test_adaptive_target_and_lock_follow_the_combined_stop():
+    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    assert rules.target_mode == "adaptive" and rules.combined_stop_min_pct == 3.0
+    q = _quotes(_market(jump=True))
+    calm = _basis(q, 20, rules)
+    hot = _basis(q, 160, rules)
+    for b in (calm, hot):
+        assert b["target_mode"] == "adaptive"
+        expected = float(np.clip(rules.target_ratio * b["adaptive_combined_stop_pct"], rules.target_min_pct, rules.target_max_pct))
+        assert b["target_pct"] == pytest.approx(expected)
+        assert b["lock_after_pct"] == pytest.approx(rules.lock_ratio * b["target_pct"])
+        assert rules.target_min_pct <= b["target_pct"] <= rules.target_max_pct
+    assert hot["target_pct"] >= calm["target_pct"]
+    # the ratio scales the target and the bounds clip it
+    rules.target_ratio = 100.0
+    assert _basis(q, 160, rules)["target_pct"] == rules.target_max_pct
+    rules.target_ratio = 0.0
+    assert _basis(q, 160, rules)["target_pct"] == rules.target_min_pct
+    # fixed stops with an adaptive target still use the adaptive combined percent for the target
+    rules = Rules.from_settings(DEFAULT_SETTINGS)
+    rules.stop_mode = "fixed"
+    mixed = _basis(q, 160, rules)
+    assert mixed["mode"] == "fixed" and mixed["combined_stop_pct"] == 25.0
+    assert mixed["target_pct"] == pytest.approx(float(np.clip(mixed["adaptive_combined_stop_pct"], 2.0, 40.0)))
+    # the trade records and applies its own target: a premium fall of target_pct exits on TARGET
+    t = run_trade(q, 160, Rules.from_settings(DEFAULT_SETTINGS))
+    assert t.target_pct == t.stop_basis["target_pct"] and t.lock_after_pct == t.stop_basis["lock_after_pct"]
 
 
 def test_trailing_window_reaches_into_the_previous_session():

@@ -169,22 +169,31 @@ P&L in the targets alike) the simulator computes, from the minute's prices:
     leg_stop_pct      = clip(stop_buffer x leg rise / leg price x 100, leg_stop_min_pct, leg_stop_max_pct)
     combined_stop_pct = clip(stop_buffer x combined rise / combined x 100, combined_stop_min_pct, combined_stop_max_pct)
 
+With `target_mode` `adaptive` (default) the target percent is
+`clip(target_ratio x combined_stop_pct, target_min_pct, target_max_pct)`
+(the adaptive combined stop percent is used even when `stop_mode` is fixed)
+and the lock arms at `lock_ratio x target`; `fixed` uses `target_pct` and
+`lock_after_pct`. A readout EXIT is ignored until the straddle is
+`min_hold_minutes` old (stops, targets, lock and square-off stay immediate).
 The percentages are held for the life of that straddle and recomputed for
 the next one; nothing is trailed. The trailing return window reaches into
 the previous session (`MinuteQuotes.prior_closes`) so an entry at 09:20 has
 a full 60 returns. `stop_mode` `fixed` uses `leg_stop_pct` and `stop_pct`.
 Every trade in `trades.json` carries `stop_basis` (mode, horizon_minutes,
 expected_move_points, implied_move_points, realized_move_points, delta_ce,
-delta_pe, gamma, rise_points, leg_stop_pct {ce, pe}, combined_stop_pct) and
-the metrics per window report `mean_leg_stop_pct`, `mean_combined_stop_pct`
-and `mean_expected_move_points`.
+delta_pe, gamma, rise_points, leg_stop_pct {ce, pe}, combined_stop_pct,
+adaptive_combined_stop_pct, target_pct, lock_after_pct, target_mode) and the
+metrics per window report `mean_leg_stop_pct`, `mean_combined_stop_pct`,
+`mean_target_pct`, `mean_lock_after_pct` and `mean_expected_move_points`.
 
 Observed on the NIFTY history: at the 09:20 open the realized move dominates
 and leg stops widen to 60 to 70 percent; mid-day they settle near 25
 percent. The combined rise of an ATM straddle is small (its net delta is
-near zero, so only gamma x m^2 remains), which puts the combined stop at the
-10 percent floor for nearly every entry; raise `combined_stop_min_pct` or
-`stop_buffer` if a looser combined stop is wanted.
+near zero, so only gamma x m^2 remains), so the combined stop often sits at
+its `combined_stop_min_pct` floor (3 percent) and the adaptive target, being
+target_ratio times that percent, is correspondingly small: targets are
+reachable on the monthly contract instead of the old 40 percent that its
+slow decay never reached.
 
 ## Simulator rules
 
@@ -196,8 +205,9 @@ minute on per-leg closes: per-leg stop (adaptive or `leg_stop_pct`), then
 either both legs out (`on_leg_stop = exit_both`) or the other leg runs on
 with its own stop, its target, a readout EXIT or the square-off
 (`hold_other`); combined stop (`combined_stop_enabled`, adaptive or
-`stop_pct`), target and lock on the summed premium; readout EXIT; square-off
-at 15:15. Legs are sold at ltp - 0.05 and
+`stop_pct`), target and lock on the summed premium (adaptive or `target_pct`
+and `lock_after_pct`); readout EXIT once the straddle is `min_hold_minutes`
+old; square-off at 15:15. Legs are sold at ltp - 0.05 and
 bought at ltp + 0.05; costs follow `openfly.experiments.costs.round_trip_cost`
 (brokerage, STT, exchange, SEBI, stamp, GST).
 

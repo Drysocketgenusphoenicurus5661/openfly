@@ -153,6 +153,62 @@ def test_replay_list_get_and_stimulus_from_a_saved_trace(client, paths):
     state = client.get("/api/brain/state").json()
     assert state["observed_at"] == "2026-09-11T09:16:00+05:30" and state["source"] == "replay"
     assert state["rates_hz"] == {"KC": 1.2, "DN": 2.1} and state["neural_ms"] == 100.0
+    assert state["replay_id"] == "rp_20260911_120000" and state["step"] == 0
+    assert state["stimulus_png"] == "/api/replay/rp_20260911_120000/stimulus/0.png"
+    assert state["history"] == [{"t": "2026-09-11T09:16:00+05:30", "rates_hz": {"KC": 1.2, "DN": 2.1}, "action": "HOLD"}]
+    assert client.get("/api/brain/stimulus.png").status_code == 200
+    assert client.get("/api/brain/stimulus.png").content == client.get(state["stimulus_png"]).content
+
+
+def test_brain_state_history_prefers_the_live_worker_then_the_newest_replay(client, paths):
+    write_trace(paths, "rp_20260911_120000")
+    run_dir = paths.runs / "paper-2026-09-11"
+    run_dir.mkdir(parents=True)
+    steps = []
+    for i in range(35):
+        steps.append(
+            {
+                "type": "step",
+                "i": i,
+                "t": f"2026-09-11T{9 + (20 + i) // 60:02d}:{(20 + i) % 60:02d}:00+05:30",
+                "trigger": "observation" if i % 5 else "tick",
+                "action": "HOLD" if i % 5 else "NONE",
+                "rates_hz": {"KC": float(i), "DN": 1.0},
+                "stimulus_hash": f"sha256:{i:064x}",
+                "technical": {"neural_ms": 100.0, "sim_ms": 100.0 * (i + 1)},
+                "compute_seconds": 0.5,
+            }
+        )
+    (run_dir / "events.jsonl").write_text("\n".join(json.dumps(s) for s in steps) + "\n", encoding="utf-8")
+    last = {k: v for k, v in steps[-1].items() if k != "type"}
+    (run_dir / "state.json").write_text(
+        json.dumps({"worker": {"state": "running", "mode": "paper", "run_dir": str(run_dir)}, "straddle": {"in_position": False, "legs": []}, "last_step": last}),
+        encoding="utf-8",
+    )
+    ctx = client.app.state.ctx
+    ctx.worker.run_dir = run_dir
+    ctx.worker.process = FakePopen(["worker", "--run-dir", str(run_dir)])
+
+    state = client.get("/api/brain/state").json()
+    assert state["source"] == "worker" and state["replay_id"] is None and state["step"] == 34
+    assert state["observed_at"] == last["t"] and state["sim_ms"] == 3500.0
+    assert state["stimulus_png"].startswith("/api/brain/stimulus.png?h=")
+    history = state["history"]
+    assert len(history) == 28  # 35 records, 7 of them ticks, all observations fit within the last 30
+    assert all(set(h) == {"t", "rates_hz", "action"} for h in history)
+    assert history[-1] == {"t": last["t"], "rates_hz": {"KC": 34.0, "DN": 1.0}, "action": "HOLD"}
+    assert client.get("/api/brain/stimulus.png").status_code == 404  # the worker keeps no image
+
+    ctx.worker.process.terminate()
+    (run_dir / "state.json").write_text(
+        json.dumps({"worker": {"state": "stopped", "mode": "paper"}, "straddle": {"in_position": False, "legs": []}, "last_step": last}),
+        encoding="utf-8",
+    )
+    ctx.worker.process = None
+    ctx.worker.run_dir = None
+    state = client.get("/api/brain/state").json()
+    assert state["source"] == "replay" and state["replay_id"] == "rp_20260911_120000"
+    assert state["stimulus_png"] == "/api/replay/rp_20260911_120000/stimulus/0.png"
     assert client.get("/api/brain/stimulus.png").status_code == 200
 
 

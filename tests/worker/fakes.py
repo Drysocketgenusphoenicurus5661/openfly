@@ -34,7 +34,7 @@ def at(hh: int, mm: int, ss: int = 0, day: date = DAY) -> datetime:
 
 def settings_with(**overrides) -> dict:
     """DEFAULT_SETTINGS with fixed stops (the adaptive tests opt in) plus section__key overrides."""
-    update: dict = {"strategy": {"stop_mode": "fixed"}}
+    update: dict = {"strategy": {"stop_mode": "fixed", "target_mode": "fixed"}}
     for key, value in overrides.items():
         section, _, name = key.partition("__")
         update.setdefault(section, {})[name] = value

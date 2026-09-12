@@ -45,7 +45,7 @@ class FakeClock:
 
 def settings_with(**overrides) -> dict:
     """DEFAULT_SETTINGS with fixed stops (the adaptive tests opt in) plus section__key overrides."""
-    update: dict = {"strategy": {"stop_mode": "fixed", "expiry_selection": "weekly"}}
+    update: dict = {"strategy": {"stop_mode": "fixed", "expiry_selection": "weekly", "target_mode": "fixed"}}
     for key, value in overrides.items():
         section, _, name = key.partition("__")
         update.setdefault(section, {})[name] = value

@@ -140,6 +140,9 @@ class StopBasis:
     buffer: float | None = None
     clipped: dict[str, str] = field(default_factory=dict)
     bounds: dict[str, list[float]] = field(default_factory=dict)
+    target_mode: str = "fixed"
+    target_pct: float = 0.0
+    lock_after_pct: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         rnd = lambda v: None if v is None else round(float(v), 2)  # noqa: E731
@@ -159,6 +162,9 @@ class StopBasis:
             "buffer": self.buffer,
             "clipped": dict(self.clipped),
             "bounds": dict(self.bounds),
+            "target_mode": self.target_mode,
+            "target_pct": round(self.target_pct, 2),
+            "lock_after_pct": round(self.lock_after_pct, 2),
         }
 
 
@@ -194,6 +200,7 @@ class StopSizer:
     def fixed(self) -> StopBasis:
         leg = float(self.strategy.get("leg_stop_pct", 30.0) or 0.0)
         combined = float(self.strategy.get("stop_pct", 25.0) or 0.0)
+        target_mode, target, lock, clipped = self.target_for(combined)
         return StopBasis(
             mode="fixed",
             horizon_minutes=int(self.strategy.get("stop_horizon_minutes", 60) or 60),
@@ -202,6 +209,11 @@ class StopSizer:
             realized_move_points=None,
             leg_stop_pct={"ce": leg, "pe": leg},
             combined_stop_pct=combined,
+            clipped={"target": clipped},
+            bounds={"target": [float(self.strategy.get("target_min_pct", 2.0)), float(self.strategy.get("target_max_pct", 40.0))]},
+            target_mode=target_mode,
+            target_pct=target,
+            lock_after_pct=lock,
         )
 
     @staticmethod
@@ -211,6 +223,31 @@ class StopSizer:
         if value > high:
             return high, "max"
         return value, ""
+
+    @property
+    def target_mode(self) -> str:
+        return str(self.strategy.get("target_mode", "adaptive")).lower()
+
+    def target_for(self, combined_stop_pct: float) -> tuple[str, float, float, str]:
+        """(target_mode, target percent, lock-after percent, clip note) for a combined stop percent.
+
+        Adaptive: target = target_ratio x the combined stop percent (after its own
+        clipping), clipped to [target_min_pct, target_max_pct]; the lock arms at
+        lock_ratio x target. Fixed: the target_pct and lock_after_pct settings.
+        """
+        if self.target_mode != "adaptive":
+            return (
+                "fixed",
+                float(self.strategy.get("target_pct", 40.0) or 0.0),
+                float(self.strategy.get("lock_after_pct", 15.0) or 0.0),
+                "",
+            )
+        ratio = float(self.strategy.get("target_ratio", 1.0))
+        low = float(self.strategy.get("target_min_pct", 2.0))
+        high = float(self.strategy.get("target_max_pct", 40.0))
+        target, clipped = self._clip(ratio * combined_stop_pct, low, high)
+        lock = float(self.strategy.get("lock_ratio", 0.5)) * target
+        return "adaptive", target, lock, clipped
 
     def realized_move(self, observation: MarketObservation | None, horizon: int) -> tuple[float | None, float | None, int]:
         """(index level, realized move in points over the horizon or None, bars used)."""
@@ -287,6 +324,7 @@ class StopSizer:
         net_delta = abs(abs(greeks["ce"]["delta"]) - abs(greeks["pe"]["delta"]))
         combined_rise = 0.5 * (greeks["ce"]["gamma"] + greeks["pe"]["gamma"]) * m * m + net_delta * m
         combined_pct, clipped["combined"] = self._clip(buffer * combined_rise / combined * 100.0, c_low, c_high)
+        target_mode, target, lock, clipped["target"] = self.target_for(combined_pct)
         return StopBasis(
             mode="adaptive",
             horizon_minutes=horizon,
@@ -302,7 +340,14 @@ class StopSizer:
             minutes_to_expiry=minutes_to_expiry,
             buffer=buffer,
             clipped=clipped,
-            bounds={"leg": [leg_low, leg_high], "combined": [c_low, c_high]},
+            bounds={
+                "leg": [leg_low, leg_high],
+                "combined": [c_low, c_high],
+                "target": [float(self.strategy.get("target_min_pct", 2.0)), float(self.strategy.get("target_max_pct", 40.0))],
+            },
+            target_mode=target_mode,
+            target_pct=target,
+            lock_after_pct=lock,
         )
 
 
@@ -557,6 +602,13 @@ class StraddleEngine:
     def min_hold_minutes(self) -> float:
         """A readout EXIT is ignored until the straddle is this old; stops, targets, lock and square-off are not."""
         return float(self.strategy.get("min_hold_minutes", 10) or 0.0)
+
+    def _lock_pct(self, pos: Position) -> float:
+        return pos.basis.lock_after_pct if pos.basis is not None else self.lock_after_pct
+
+    @staticmethod
+    def _pct_text(value: float) -> str:
+        return f"{value:.0f}" if abs(value - round(value)) < 0.05 else f"{value:.1f}"
 
     def position_age_minutes(self, now: datetime) -> float | None:
         pos = self.position
@@ -1122,7 +1174,7 @@ class StraddleEngine:
             pos.locked = True
             pos.stop_level = pos.entry_credit
             step.action = Action.LOCK.value
-            step.detail = f"premium fell {self.lock_after_pct:g} percent, stop moved to the entry credit"
+            step.detail = f"premium fell {self._lock_pct(pos):g} percent, stop moved to the entry credit"
         return False
 
     def _apply_fill(self, fill: Fill) -> None:
@@ -1178,8 +1230,10 @@ class StraddleEngine:
         basis = pos.basis
         combined_pct = basis.combined_stop_pct
         pos.stop_level = credit * (1 + combined_pct / 100.0) if self.combined_stop_enabled and combined_pct > 0 else None
-        pos.target_level = credit * (1 - self.target_pct / 100.0) if self.target_pct > 0 else None
-        pos.lock_level = credit * (1 - self.lock_after_pct / 100.0) if self.lock_after_pct > 0 and pos.stop_level is not None else None
+        target_pct = basis.target_pct
+        lock_pct = basis.lock_after_pct
+        pos.target_level = credit * (1 - target_pct / 100.0) if target_pct > 0 else None
+        pos.lock_level = credit * (1 - lock_pct / 100.0) if lock_pct > 0 and pos.stop_level is not None else None
         for leg in pos.legs.values():
             pct = basis.leg_stop_pct.get("ce" if leg.option_type == "CE" else "pe", self.leg_stop_pct)
             if pct > 0:
@@ -1414,6 +1468,11 @@ class StraddleEngine:
             },
             "thresholds": {
                 "tau": self.tau,
+                "target_mode": self.strategy.get("target_mode", "adaptive"),
+                "target_ratio": self.strategy.get("target_ratio", 1.0),
+                "target_min_pct": self.strategy.get("target_min_pct", 2.0),
+                "target_max_pct": self.strategy.get("target_max_pct", 40.0),
+                "lock_ratio": self.strategy.get("lock_ratio", 0.5),
                 "stop_mode": self.stop_mode,
                 "stop_horizon_minutes": self.strategy.get("stop_horizon_minutes", 60),
                 "stop_buffer": self.strategy.get("stop_buffer", 1.25),
@@ -1513,10 +1572,7 @@ class StraddleEngine:
             parts.append(f"Stop {pos.stop_level:.1f}")
         else:
             parts.append("No combined stop")
-        if pos.target_level is not None:
-            parts.append(f"target {pos.target_level:.1f}")
-        if pos.lock_level is not None:
-            parts.append(f"lock after {pos.lock_level:.1f}")
+        parts.extend(self._target_phrases(pos, capital=False))
         if self.window is not None:
             parts.append(f"hard exit {hhmm(self.window.square_off)}")
         text = ", ".join(parts) + "."
@@ -1552,17 +1608,38 @@ class StraddleEngine:
         else:
             clauses.append("no combined stop")
         text = head + " " + "; ".join(clauses) + "."
-        extras = []
-        if pos.target_level is not None:
-            extras.append(f"Target {pos.target_level:.1f}")
-        if pos.lock_level is not None:
-            extras.append(f"lock after {pos.lock_level:.1f}")
+        extras = self._target_phrases(pos, capital=True)
         if self.window is not None:
             extras.append(f"hard exit {hhmm(self.window.square_off)}")
         if extras:
             text += " " + ", ".join(extras) + "."
         where = "software" if self.leg_stop_mode == "software" else "at the broker"
         return text + f" Leg stops {where}, held for the life of this straddle."
+
+    def _target_phrases(self, pos: Position, capital: bool) -> list[str]:
+        """"target 4 percent at 468.5, lock after a 2 percent fall (to 470.5)" or the fixed-mode levels."""
+        basis = pos.basis
+        adaptive = basis is not None and basis.target_mode == "adaptive"
+        phrases: list[str] = []
+        word = "Target" if capital else "target"
+        if pos.target_level is not None:
+            if adaptive:
+                note = ""
+                if basis.clipped.get("target") == "min":
+                    note = f" (floor {basis.bounds.get('target', [0, 0])[0]:g} percent)"
+                elif basis.clipped.get("target") == "max":
+                    note = f" (cap {basis.bounds.get('target', [0, 0])[1]:g} percent)"
+                phrases.append(f"{word} {self._pct_text(basis.target_pct)} percent at {pos.target_level:.1f}{note}")
+            else:
+                phrases.append(f"{word} {pos.target_level:.1f}")
+        elif capital:
+            phrases.append("No target")
+        if pos.lock_level is not None:
+            if adaptive:
+                phrases.append(f"lock after a {self._pct_text(basis.lock_after_pct)} percent fall (to {pos.lock_level:.1f})")
+            else:
+                phrases.append(f"lock after {pos.lock_level:.1f}")
+        return phrases
 
     @staticmethod
     def _clip_note(basis: StopBasis, key: str) -> str:
@@ -1654,7 +1731,7 @@ class StraddleEngine:
         elif action == Action.LOCK.value:
             if pos is not None:
                 parts.append(
-                    f"Combined premium {pos.combined_premium():.1f} has fallen {self.lock_after_pct:g} percent below the {pos.entry_credit:.1f} credit. "
+                    f"Combined premium {pos.combined_premium():.1f} has fallen {self._pct_text(self._lock_pct(pos))} percent below the {pos.entry_credit:.1f} credit. "
                     f"Stop moved to the entry credit {pos.entry_credit:.1f}."
                 )
         elif action in (Action.STOP.value, Action.TARGET.value, Action.SQUARE_OFF.value, Action.EXIT.value, Action.STOP_LEG.value):

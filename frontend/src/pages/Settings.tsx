@@ -37,6 +37,8 @@ interface Field {
 
 const whenFixed = (form: Form) => form.strategy.stop_mode === 'fixed'
 const whenAdaptive = (form: Form) => form.strategy.stop_mode !== 'fixed'
+const whenTargetFixed = (form: Form) => form.strategy.target_mode === 'fixed'
+const whenTargetAdaptive = (form: Form) => form.strategy.target_mode !== 'fixed'
 
 const FIELDS: Record<Section, Field[]> = {
   strategy: [
@@ -89,6 +91,14 @@ const FIELDS: Record<Section, Field[]> = {
       min: 0,
       step: 1,
       help: '0 means unlimited; straddles run one at a time',
+    },
+    {
+      key: 'min_hold_minutes',
+      label: 'Minimum hold (minutes)',
+      type: 'number',
+      min: 0,
+      step: 1,
+      help: 'The readout cannot exit a straddle earlier than this; stops and targets still can',
     },
     {
       key: 'reentry_cooldown_minutes',
@@ -228,22 +238,73 @@ const FIELDS: Record<Section, Field[]> = {
       disabledWhen: whenAdaptive,
     },
     {
+      key: 'target_mode',
+      label: 'Target sizing',
+      type: 'select',
+      options: [
+        { value: 'adaptive', label: 'adaptive (from the expected move)' },
+        { value: 'fixed', label: 'fixed (the percentages below)' },
+      ],
+      help: 'Adaptive: the take-profit and the lock are sized from the same expected move as the stops; Fixed: use target and lock percentages',
+    },
+    {
+      key: 'target_ratio',
+      label: 'Target ratio',
+      type: 'number',
+      min: 0.1,
+      max: 5,
+      step: 0.05,
+      help: 'Target percent = ratio x the expected premium decay for the move',
+      disabledWhen: whenTargetFixed,
+    },
+    {
+      key: 'lock_ratio',
+      label: 'Lock ratio',
+      type: 'number',
+      min: 0,
+      max: 1,
+      step: 0.05,
+      help: 'Lock after this fraction of the target has been reached',
+      disabledWhen: whenTargetFixed,
+    },
+    {
+      key: 'target_min_pct',
+      label: 'Target floor (percent)',
+      type: 'number',
+      min: 0.5,
+      max: 99,
+      step: 0.5,
+      help: 'Adaptive targets are clipped to this band',
+      disabledWhen: whenTargetFixed,
+    },
+    {
+      key: 'target_max_pct',
+      label: 'Target cap (percent)',
+      type: 'number',
+      min: 1,
+      max: 99,
+      step: 1,
+      disabledWhen: whenTargetFixed,
+    },
+    {
       key: 'target_pct',
-      label: 'Combined target percent',
+      label: 'Combined target percent (fixed sizing)',
       type: 'number',
       min: 1,
       max: 99,
       step: 1,
       help: 'Exit both legs when the summed premium falls this much below the credit',
+      disabledWhen: whenTargetAdaptive,
     },
     {
       key: 'lock_after_pct',
-      label: 'Lock after percent',
+      label: 'Lock after percent (fixed sizing)',
       type: 'number',
       min: 0,
       max: 99,
       step: 1,
       help: 'After this much decay, move the combined stop to the entry credit',
+      disabledWhen: whenTargetAdaptive,
     },
   ],
   risk: [
@@ -415,6 +476,9 @@ function validate(form: Form): Record<string, string> {
   }
   if (Number(s.leg_stop_min_pct) > Number(s.leg_stop_max_pct)) {
     errors['strategy.leg_stop_max_pct'] = 'Cap must be at or above the floor'
+  }
+  if (Number(s.target_min_pct) > Number(s.target_max_pct)) {
+    errors['strategy.target_max_pct'] = 'Cap must be at or above the floor'
   }
   if (Number(s.combined_stop_min_pct) > Number(s.combined_stop_max_pct)) {
     errors['strategy.combined_stop_max_pct'] = 'Cap must be at or above the floor'

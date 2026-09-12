@@ -399,9 +399,11 @@ class ExperimentRunner:
             else:
                 shuffled = flat
                 sh_metrics = window_metrics(flat, lots=lots, n_observations=len(frame))
+            random_metrics = window_metrics(random, lots=lots, n_observations=len(frame))
+            random_metrics["trade_count_target"] = len(strat.trades)
             controls_by_window[w] = {
                 "fixed_0920": window_metrics(fixed, lots=lots, n_observations=len(frame)),
-                "random_entry": window_metrics(random, lots=lots, n_observations=len(frame)),
+                "random_entry": random_metrics,
                 "shuffled": sh_metrics,
                 "flat": window_metrics(flat, lots=lots, n_observations=len(frame)),
             }
@@ -595,7 +597,12 @@ def _signal_builder(frame: pd.DataFrame, entry: np.ndarray, exit_: np.ndarray):
 
 
 def _random_entry_rows(days, rules: Rules, interval_min: int, k: int, seed: int) -> dict:
-    """k random (date, observation row) entry points in the trade window, matched on trade count."""
+    """k random (date, observation row) entry points in the trade window, matched on trade count.
+
+    Best effort: a random straddle that runs to the square-off blocks the rest of
+    its day, so with few days the achieved count can fall short of k; the
+    runner records both numbers.
+    """
     rng = np.random.default_rng(seed + 17)
     out: dict = {d: np.zeros(0, dtype=np.int64) for d, _ in days}
     if k <= 0 or not days:
@@ -608,7 +615,7 @@ def _random_entry_rows(days, rules: Rules, interval_min: int, k: int, seed: int)
         return out
     chosen_idx = set()
     target = min(k, len(pool))
-    for _ in range(6):
+    for _ in range(12):
         need = target - _count_trades(days, rules, interval_min, out)
         if need <= 0:
             break

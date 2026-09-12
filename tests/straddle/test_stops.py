@@ -54,7 +54,7 @@ def expected(ret_std: float, when=None, call=CALL, put=PUT, index=INDEX, buffer=
     leg_pe = min(80.0, max(15.0, buffer * rise_pe / put * 100.0))
     net = abs(abs(deltas[0]) - abs(deltas[1]))
     rise_c = 0.5 * (g_ce + g_pe) * m * m + net * m
-    combined_pct = min(50.0, max(10.0, buffer * rise_c / combined * 100.0))
+    combined_pct = min(50.0, max(3.0, buffer * rise_c / combined * 100.0))
     return {"m": m, "implied": implied, "realized": realized, "ce": leg_ce, "pe": leg_pe, "combined": combined_pct, "rise_ce": rise_ce}
 
 
@@ -84,12 +84,12 @@ def test_adaptive_stops_widen_when_realized_volatility_doubles_and_narrow_in_a_c
     assert 15.0 < calm.leg_stop_pct["ce"] < wild.leg_stop_pct["ce"] < 80.0
     assert wild.leg_stop_pct["pe"] > calm.leg_stop_pct["pe"]
     assert wild.expected_move_points == pytest.approx(2 * calm.expected_move_points, rel=0.02)
-    assert calm.clipped == {"ce": "", "pe": "", "combined": "min"}
+    assert {k: calm.clipped[k] for k in ("ce", "pe", "combined")} == {"ce": "", "pe": "", "combined": "min"}
     # a genuinely calm hour: realized below implied, so the implied move rules and the stops narrow
     quiet = sizer.compute(quote, observation(at(10, 20), ret_std=0.00001), at(10, 20))
     assert quiet.expected_move_points == pytest.approx(quiet.implied_move_points)
     assert quiet.leg_stop_pct["ce"] == pytest.approx(expected(0.0)["ce"], rel=1e-6)
-    assert quiet.leg_stop_pct["ce"] < calm.leg_stop_pct["ce"] and quiet.combined_stop_pct == 10.0
+    assert quiet.leg_stop_pct["ce"] < calm.leg_stop_pct["ce"] and quiet.combined_stop_pct == 3.0
 
 
 def test_clipping_at_min_and_max():
@@ -99,15 +99,15 @@ def test_clipping_at_min_and_max():
     monthly = sq(at(10, 20), CALL, PUT, expiry=MONTHLY)
     floor = sizer.compute(monthly, observation(at(10, 20)), at(10, 20))
     assert floor.minutes_to_expiry == 4810 and floor.implied_move_points == pytest.approx(expected(0.0, expiry=MONTHLY)["implied"])
-    assert floor.leg_stop_pct == {"ce": 15.0, "pe": 15.0} and floor.combined_stop_pct == 10.0
-    assert floor.clipped == {"ce": "min", "pe": "min", "combined": "min"}
+    assert floor.leg_stop_pct == {"ce": 15.0, "pe": 15.0} and floor.combined_stop_pct == 3.0
+    assert {k: floor.clipped[k] for k in ("ce", "pe", "combined")} == {"ce": "min", "pe": "min", "combined": "min"}
     cap = sizer.compute(quote, observation(at(10, 20), ret_std=0.003), at(10, 20))
     assert cap.leg_stop_pct == {"ce": 80.0, "pe": 80.0} and cap.combined_stop_pct == 50.0
-    assert cap.clipped == {"ce": "max", "pe": "max", "combined": "max"}
+    assert {k: cap.clipped[k] for k in ("ce", "pe", "combined")} == {"ce": "max", "pe": "max", "combined": "max"}
     custom = StopSizer(settings_with(strategy__stop_mode="adaptive", strategy__leg_stop_min_pct=5, strategy__leg_stop_max_pct=40, strategy__combined_stop_min_pct=2, strategy__combined_stop_max_pct=20))
     tight = custom.compute(quote, observation(at(10, 20), ret_std=0.003), at(10, 20))
     assert tight.leg_stop_pct == {"ce": 40.0, "pe": 40.0} and tight.combined_stop_pct == 20.0
-    assert tight.bounds == {"leg": [5.0, 40.0], "combined": [2.0, 20.0]}
+    assert tight.bounds["leg"] == [5.0, 40.0] and tight.bounds["combined"] == [2.0, 20.0]
 
 
 def test_fewer_than_twenty_bars_falls_back_to_implied():
@@ -185,7 +185,8 @@ def test_entry_applies_adaptive_stops_and_the_narrative_explains_them():
     assert basis.leg_rise_points["ce"] == pytest.approx(ref["rise_ce"], rel=0.02)
     assert f"A move of that size lifts the call about {basis.leg_rise_points['ce']:.0f} points, so the call stop is {basis.leg_stop_pct['ce']:.0f} percent above its price at {call_leg.stop_price:.2f};" in text
     assert f"put stop {basis.leg_stop_pct['pe']:.0f} percent at {put_leg.stop_price:.2f};" in text
-    assert f"combined stop {basis.combined_stop_pct:.0f} percent at {pos.stop_level:.1f} (floor 10 percent)." in text
+    assert basis.clipped["combined"] == "" and basis.combined_stop_pct > 3.0
+    assert f"combined stop {basis.combined_stop_pct:.0f} percent at {pos.stop_level:.1f}." in text
     assert "Target 120.8, lock after 171.1, hard exit 15:15. Leg stops at the broker, held for the life of this straddle." in text
     assert step.technical["levels"]["stop_basis"]["mode"] == "adaptive"
     assert step.technical["thresholds"]["stop_mode"] == "adaptive"

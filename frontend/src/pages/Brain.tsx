@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { api } from '@/api/client'
-import { useBrainState, useCircuits } from '@/api/hooks'
+import { useBrainState, useCircuits, useReplays } from '@/api/hooks'
+import type { RatesHz } from '@/api/types'
 import { DnGauge, PredictionGauge } from '@/components/brain/Gauges'
 import { Heatmap } from '@/components/brain/Heatmap'
 import { StimulusImage } from '@/components/brain/StimulusImage'
@@ -13,24 +13,73 @@ import { useLatestDecision, useObservationSteps } from '@/hooks/useLatestDecisio
 import { fmtInt, fmtNum } from '@/lib/format'
 import { formatTime } from '@/lib/time'
 
+interface Observation {
+  t: string
+  rates_hz: RatesHz
+  action?: string
+}
+
+// The image the fly saw: the URL the state names, else the live endpoint
+// with the stimulus hash as a cache buster so a new observation reloads it.
+function stimulusSource(
+  stimulusPng: string | null | undefined,
+  hash: string | null | undefined
+): string {
+  if (stimulusPng) return stimulusPng
+  return hash ? `/api/brain/stimulus.png?k=${encodeURIComponent(hash)}` : '/api/brain/stimulus.png'
+}
+
 export default function BrainPage() {
   const { data: circuits } = useCircuits()
-  const { data: state } = useBrainState()
-  const steps = useObservationSteps()
+  const { data: replays } = useReplays(5000)
+  const replayRunning = (replays?.replays ?? []).some(
+    (r) => r.state === 'running' || r.state === 'queued'
+  )
+  // A running replay changes the last observation every second or two.
+  const { data: state } = useBrainState(replayRunning ? 2000 : 5000)
+  const liveSteps = useObservationSteps()
   const { step: latest } = useLatestDecision()
 
-  const observations = useMemo(() => {
-    if (steps.length > 0) return steps.map((s) => ({ t: s.t, rates_hz: s.rates_hz }))
-    if (state) return [{ t: state.observed_at, rates_hz: state.rates_hz }]
-    return []
-  }, [steps, state])
-  const populations = useMemo(() => circuits?.populations.map((p) => p.name), [circuits])
+  // Seed from the state's history on load, then keep appending live
+  // observations; one column per distinct time, newest last.
+  const observations = useMemo<Observation[]>(() => {
+    const byTime = new Map<string, Observation>()
+    for (const h of state?.history ?? []) byTime.set(h.t, h)
+    for (const s of liveSteps) byTime.set(s.t, { t: s.t, rates_hz: s.rates_hz, action: s.action })
+    if (state && !byTime.has(state.observed_at)) {
+      byTime.set(state.observed_at, {
+        t: state.observed_at,
+        rates_hz: state.rates_hz,
+        action: state.action,
+      })
+    }
+    return [...byTime.values()].sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0)).slice(-30)
+  }, [state, liveSteps])
+
+  const populations = useMemo(() => {
+    const names = circuits?.populations.map((p) => p.name) ?? []
+    const seen = new Set(names)
+    for (const o of observations) {
+      for (const k of Object.keys(o.rates_hz)) {
+        if (!seen.has(k)) {
+          names.push(k)
+          seen.add(k)
+        }
+      }
+    }
+    return names
+  }, [circuits, observations])
+
   const decoder = state?.fixed_decoder ?? latest?.fixed_decoder
   const prediction = state?.prediction ?? latest?.prediction
-  const stimulusSrc =
-    latest?.stimulus_png && latest.stimulus_png !== '/api/brain/stimulus.png'
-      ? latest.stimulus_png
-      : api.stimulusUrl()
+  const stimulusSrc = stimulusSource(state?.stimulus_png, state?.stimulus_hash)
+  const sourceLine = !state
+    ? null
+    : state.source === 'replay'
+      ? `From replay ${state.replay_id ?? '?'}${(state.step ?? state.step_i) != null ? ` step ${state.step ?? state.step_i}` : ''} at ${formatTime(state.observed_at)}`
+      : state.source === 'worker'
+        ? `Live worker, observed ${formatTime(state.observed_at)}`
+        : `Observed ${formatTime(state.observed_at)}`
 
   return (
     <div className="space-y-4">
@@ -38,7 +87,7 @@ export default function BrainPage() {
         title="Brain"
         description={
           state
-            ? `Observed ${formatTime(state.observed_at)}, ${state.neural_ms} ms of neural time per observation, ${fmtNum(state.compute_seconds, 2)} s compute, simulated ${fmtInt(state.sim_ms)} ms so far.`
+            ? `${sourceLine}. ${state.neural_ms} ms of neural time per observation, ${fmtNum(state.compute_seconds, 2)} s compute, simulated ${fmtInt(state.sim_ms)} ms so far.`
             : 'What the fly saw, what it spiked, and what the readouts made of it.'
         }
       />
@@ -47,8 +96,7 @@ export default function BrainPage() {
           <CardHeader>
             <CardTitle className="text-sm">Stimulus</CardTitle>
             <CardDescription>
-              {latest?.technical?.encoder ? `Encoder ${latest.technical.encoder}: ` : ''}
-              the photoreceptor input for the last observation.
+              {sourceLine ? `${sourceLine}. ` : ''}The photoreceptor input for the last observation.
               {state?.stimulus_hash && (
                 <span className="ml-1 font-mono text-[11px]" title={state.stimulus_hash}>
                   {state.stimulus_hash.slice(0, 22)}
@@ -57,10 +105,7 @@ export default function BrainPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <StimulusImage
-              src={stimulusSrc}
-              cacheKey={state?.stimulus_hash ?? latest?.stimulus_hash}
-            />
+            <StimulusImage key={stimulusSrc} src={stimulusSrc} />
           </CardContent>
         </Card>
         <Card className="col-span-3">
@@ -68,6 +113,9 @@ export default function BrainPage() {
             <CardTitle className="text-sm">Population firing rates</CardTitle>
             <CardDescription>
               Rows are populations, columns the last 30 observations; one shared colour scale.
+              {state?.history
+                ? ` Seeded from the ${state.history.length} observations the API remembers.`
+                : ''}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -134,7 +182,7 @@ export default function BrainPage() {
           {latest ? (
             <DecisionPanel step={latest} title="Decision" defaultTab="technical" />
           ) : (
-            <EmptyState text="No observation yet." />
+            <EmptyState text="No observation from the worker yet." />
           )}
         </CardContent>
       </Card>

@@ -34,7 +34,10 @@ def test_smoke_run_writes_valid_result(tmp_path):
             assert k in m, (w, k)
     assert set(written["controls"]) == {"fixed_0920", "random_entry", "shuffled", "flat"}
     assert written["controls"]["flat"]["net_pnl_per_lot"] == 0.0
-    assert written["controls"]["random_entry"]["trades"] == written["metrics"]["test"]["trades"]
+    strategy_trades = written["metrics"]["test"]["trades"]
+    random = written["controls"]["random_entry"]
+    assert random["trade_count_target"] == strategy_trades
+    assert 0 < random["trades"] <= strategy_trades  # matched on count, best effort with three days
     curves = written["curves"]["test"]
     n = len(curves["t"])
     assert n == 3 and all(len(curves[k]) == n for k in ("strategy", "fixed_0920", "random_entry", "shuffled", "flat"))
@@ -48,9 +51,12 @@ def test_smoke_run_writes_valid_result(tmp_path):
     assert all(t["expiry"] == "2026-07-28" for t in fixed_trades)  # July 2026 monthly contract
     assert written["config"]["expiry_selection"] == "monthly"
     assert written["provenance"]["expiries"]["test"] == ["2026-07-28"]
-    assert all(15.0 <= t["leg_stop_pct_ce"] <= 80.0 and 10.0 <= t["combined_stop_pct"] <= 50.0 for t in fixed_trades)
+    assert all(15.0 <= t["leg_stop_pct_ce"] <= 80.0 and 3.0 <= t["combined_stop_pct"] <= 50.0 for t in fixed_trades)
     for m in written["controls"].values():
-        assert "mean_leg_stop_pct" in m and "mean_combined_stop_pct" in m
+        assert "mean_leg_stop_pct" in m and "mean_combined_stop_pct" in m and "mean_target_pct" in m
+    assert all("target_pct" in t["stop_basis"] and "lock_after_pct" in t["stop_basis"] for t in fixed_trades)
+    assert all(2.0 <= t["target_pct"] <= 40.0 for t in fixed_trades)
+    assert written["metrics"]["test"]["mean_target_pct"] is not None or written["metrics"]["test"]["trades"] == 0
     assert written["controls"]["fixed_0920"]["mean_leg_stop_pct"] is not None
     assert written["provenance"]["fake_brain"] is True
 

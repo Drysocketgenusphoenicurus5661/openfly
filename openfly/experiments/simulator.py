@@ -14,7 +14,9 @@ Rules (all from settings.strategy):
 - on the summed premium: combined stop (when combined_stop_enabled), target,
   and the lock (after the premium has fallen lock_after_pct the stop moves to
   the entry credit);
-- readout EXIT at observation rows; square-off at 15:15.
+- readout EXIT at observation rows once the straddle is at least
+  min_hold_minutes old (stops, targets, lock and square-off are immediate);
+  square-off at 15:15.
 
 Stop distances (`stop_mode`): "adaptive" (default) computes them at each
 entry from the expected index move over stop_horizon_minutes, the larger of
@@ -22,7 +24,11 @@ the move the straddle itself prices for that horizon and the recent realized
 move (std of the trailing 60 one-minute log returns x sqrt(horizon) x index),
 translated into a premium rise per leg with Black-Scholes delta and gamma,
 times stop_buffer, clipped to the configured bounds and held for the life of
-that straddle; "fixed" uses leg_stop_pct and stop_pct. See `stop_basis`.
+that straddle; "fixed" uses leg_stop_pct and stop_pct. Targets
+(`target_mode`): "adaptive" (default) sets the target percent to
+target_ratio x the adaptive combined stop percent, clipped to
+[target_min_pct, target_max_pct], and arms the lock at lock_ratio x target;
+"fixed" uses target_pct and lock_after_pct. See `stop_basis`.
 
 Prices are the minute closes of each leg (recorded chain when stored,
 otherwise synthetic), sold at ltp minus the spread and bought back at ltp
@@ -62,8 +68,14 @@ class Rules:
     stop_buffer: float = 1.25
     leg_stop_min_pct: float = 15.0
     leg_stop_max_pct: float = 80.0
-    combined_stop_min_pct: float = 10.0
+    combined_stop_min_pct: float = 3.0
     combined_stop_max_pct: float = 50.0
+    target_mode: str = "adaptive"
+    target_ratio: float = 1.0
+    target_min_pct: float = 2.0
+    target_max_pct: float = 40.0
+    lock_ratio: float = 0.5
+    min_hold_minutes: int = 10
     trade_start: str = "09:20"
     last_entry: str = "14:30"
     square_off: str = "15:15"
@@ -89,8 +101,14 @@ class Rules:
             stop_buffer=float(s.get("stop_buffer", 1.25)),
             leg_stop_min_pct=float(s.get("leg_stop_min_pct", 15.0)),
             leg_stop_max_pct=float(s.get("leg_stop_max_pct", 80.0)),
-            combined_stop_min_pct=float(s.get("combined_stop_min_pct", 10.0)),
+            combined_stop_min_pct=float(s.get("combined_stop_min_pct", 3.0)),
             combined_stop_max_pct=float(s.get("combined_stop_max_pct", 50.0)),
+            target_mode=str(s.get("target_mode", "adaptive")),
+            target_ratio=float(s.get("target_ratio", 1.0)),
+            target_min_pct=float(s.get("target_min_pct", 2.0)),
+            target_max_pct=float(s.get("target_max_pct", 40.0)),
+            lock_ratio=float(s.get("lock_ratio", 0.5)),
+            min_hold_minutes=int(s.get("min_hold_minutes", 10)),
             trade_start=str(s.get("trade_start", "09:20")),
             last_entry=str(s.get("last_entry", "14:30")),
             square_off=str(s.get("square_off", "15:15")),
@@ -146,6 +164,8 @@ class Trade:
     leg_stop_pct_ce: float = 30.0
     leg_stop_pct_pe: float = 30.0
     combined_stop_pct: float = 25.0
+    target_pct: float = 40.0
+    lock_after_pct: float = 15.0
     stop_basis: dict = field(default_factory=dict)
     expiry: str = ""
 
@@ -167,26 +187,33 @@ def square_off_row(quotes: MinuteQuotes, rules: Rules) -> int:
 
 
 def stop_basis(quotes: MinuteQuotes, entry_row: int, strike: float, rules: Rules, ce: float, pe: float) -> dict:
-    """Stop percentages for one straddle entered at `entry_row` (held for its life).
+    """Stop, target and lock percentages for one straddle entered at `entry_row` (held for its life).
 
-    adaptive: m = max(implied, realized) over stop_horizon_minutes, with
+    adaptive stops: m = max(implied, realized) over stop_horizon_minutes, with
     implied = combined premium x sqrt(horizon / minutes to expiry) and
     realized = std(trailing 60 one-minute log returns) x sqrt(horizon) x index;
     leg rise = |delta| x m + 0.5 x gamma x m^2, combined rise = 0.5 x (gamma_ce +
     gamma_pe) x m^2 + |delta_ce + delta_pe| x m (the straddle's net delta);
     percent = stop_buffer x rise / price x 100, clipped to the configured bounds.
+    adaptive target: target_ratio x the adaptive combined stop percent, clipped
+    to [target_min_pct, target_max_pct]; the lock arms at lock_ratio x target.
     """
     horizon = int(rules.stop_horizon_minutes)
     combined = float(ce + pe)
-    if rules.stop_mode != "adaptive":
+    adaptive_stops = rules.stop_mode == "adaptive"
+    adaptive_target = rules.target_mode == "adaptive"
+    if not adaptive_stops and not adaptive_target:
         return {
             "mode": "fixed",
+            "target_mode": "fixed",
             "horizon_minutes": horizon,
             "expected_move_points": None,
             "implied_move_points": None,
             "realized_move_points": None,
             "leg_stop_pct": {"ce": float(rules.leg_stop_pct), "pe": float(rules.leg_stop_pct)},
             "combined_stop_pct": float(rules.stop_pct),
+            "target_pct": float(rules.target_pct),
+            "lock_after_pct": float(rules.lock_after_pct),
         }
     day = quotes.day
     spot = float(day.close[entry_row])
@@ -210,8 +237,23 @@ def stop_basis(quotes: MinuteQuotes, entry_row: int, strike: float, rules: Rules
         raw = rules.stop_buffer * rise / max(price, floor) * 100.0
         return float(np.clip(raw, lo, hi))
 
+    adaptive_combined = pct(rise_comb, combined, rules.combined_stop_min_pct, rules.combined_stop_max_pct)
+    if adaptive_stops:
+        leg_ce = pct(rise_ce, ce, rules.leg_stop_min_pct, rules.leg_stop_max_pct)
+        leg_pe = pct(rise_pe, pe, rules.leg_stop_min_pct, rules.leg_stop_max_pct)
+        combined_pct = adaptive_combined
+    else:
+        leg_ce = leg_pe = float(rules.leg_stop_pct)
+        combined_pct = float(rules.stop_pct)
+    if adaptive_target:
+        target_pct = float(np.clip(rules.target_ratio * adaptive_combined, rules.target_min_pct, rules.target_max_pct))
+        lock_pct = float(rules.lock_ratio * target_pct)
+    else:
+        target_pct = float(rules.target_pct)
+        lock_pct = float(rules.lock_after_pct)
     return {
-        "mode": "adaptive",
+        "mode": "adaptive" if adaptive_stops else "fixed",
+        "target_mode": "adaptive" if adaptive_target else "fixed",
         "horizon_minutes": horizon,
         "expected_move_points": float(m),
         "implied_move_points": float(implied),
@@ -220,11 +262,11 @@ def stop_basis(quotes: MinuteQuotes, entry_row: int, strike: float, rules: Rules
         "delta_pe": float(d_pe),
         "gamma": float(gamma),
         "rise_points": {"ce": float(rise_ce), "pe": float(rise_pe), "combined": float(rise_comb)},
-        "leg_stop_pct": {
-            "ce": pct(rise_ce, ce, rules.leg_stop_min_pct, rules.leg_stop_max_pct),
-            "pe": pct(rise_pe, pe, rules.leg_stop_min_pct, rules.leg_stop_max_pct),
-        },
-        "combined_stop_pct": pct(rise_comb, combined, rules.combined_stop_min_pct, rules.combined_stop_max_pct),
+        "leg_stop_pct": {"ce": leg_ce, "pe": leg_pe},
+        "combined_stop_pct": combined_pct,
+        "adaptive_combined_stop_pct": adaptive_combined,
+        "target_pct": target_pct,
+        "lock_after_pct": lock_pct,
     }
 
 
@@ -250,8 +292,8 @@ def run_trade(
     leg_mult_ce = 1.0 + basis["leg_stop_pct"]["ce"] / 100.0
     leg_mult_pe = 1.0 + basis["leg_stop_pct"]["pe"] / 100.0
     stop_mult = 1.0 + basis["combined_stop_pct"] / 100.0
-    target_mult = 1.0 - rules.target_pct / 100.0
-    lock_mult = 1.0 - rules.lock_after_pct / 100.0
+    target_mult = 1.0 - basis["target_pct"] / 100.0
+    lock_mult = 1.0 - basis["lock_after_pct"] / 100.0
 
     def finish(call_row, call_exit, put_row, put_exit, call_reason, put_reason, exit_reason, leg_stops):
         return _finish(quotes, strike, entry_row, ce, pe, call_row, call_exit, put_row, put_exit,
@@ -267,7 +309,10 @@ def run_trade(
     n = cs.size
     exit_mask = None
     if exit_rows is not None:
-        exit_mask = np.asarray(exit_rows, dtype=bool)[r0 : last_row + 1]
+        exit_mask = np.asarray(exit_rows, dtype=bool)[r0 : last_row + 1].copy()
+        # A readout EXIT counts only once the straddle is min_hold_minutes old.
+        age = quotes.day.minute[r0 : last_row + 1] - quotes.day.minute[entry_row]
+        exit_mask &= age >= int(rules.min_hold_minutes)
 
     t_call = _first(cs >= ce * leg_mult_ce)
     t_put = _first(ps >= pe * leg_mult_pe)
@@ -382,6 +427,8 @@ def _finish(quotes, strike, entry_row, ce, pe, call_row, call_exit, put_row, put
         leg_stop_pct_ce=float(basis["leg_stop_pct"]["ce"]),
         leg_stop_pct_pe=float(basis["leg_stop_pct"]["pe"]),
         combined_stop_pct=float(basis["combined_stop_pct"]),
+        target_pct=float(basis["target_pct"]),
+        lock_after_pct=float(basis["lock_after_pct"]),
         stop_basis=basis,
         expiry=quotes.expiry.isoformat() if hasattr(quotes.expiry, "isoformat") else str(quotes.expiry),
     )

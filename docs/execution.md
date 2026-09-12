@@ -109,8 +109,18 @@ Rules implemented:
   percent at 221.4 (floor 10 percent). Target 120.8, lock after 171.1, hard
   exit 15:15. Leg stops at the broker, held for the life of this straddle.").
   With a symmetric straddle the combined rise is gamma-only and small, so the
-  combined stop usually sits at `combined_stop_min_pct`; the floor is what
-  protects the pair, the leg stops carry the volatility adjustment.
+  combined stop often sits at `combined_stop_min_pct` (3 percent by default so
+  that monthly contracts, whose premium moves a few percent a day, get
+  reachable levels); the leg stops carry the volatility adjustment.
+- Adaptive target and lock (`target_mode` adaptive, the default). The target
+  percent is `target_ratio` x the adaptive combined stop percent (after its
+  own clipping), clipped to [`target_min_pct`, `target_max_pct`], and the
+  breakeven lock arms once the premium has fallen `lock_ratio` x that target
+  percent; both are fixed for the life of the straddle and recomputed for the
+  next one. `stop_basis` carries `target_mode`, `target_pct` and
+  `lock_after_pct`; `state_snapshot()` target_level uses them and the entry
+  narrative says "Target 4 percent at 468.5, lock after a 2 percent fall (to
+  470.5)". `target_mode` fixed keeps `target_pct` and `lock_after_pct`.
 - Per-leg fixed stops at entry_price x (1 + leg stop percent/100) rounded up
   to the tick. `leg_stop_mode` broker: a STOPS intent (one BUY SL-M leg per
   option, `StopLeg.trigger_price`) is emitted right after the entry fills.
