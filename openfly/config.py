@@ -146,6 +146,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "tau": 0.1,
         "horizon_minutes": 60,
         "half_saturation": 0.5,
+        "r8_ame12_excitatory": True,
     },
     "costs": {
         "brokerage_per_order": 20.0,
