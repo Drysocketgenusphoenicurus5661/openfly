@@ -412,6 +412,7 @@ class EngineStep:
     closed: dict[str, Any] | None = None
     entry_failed: bool = False
     notes: list[str] = field(default_factory=list)
+    deferred_exit: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -489,6 +490,7 @@ class StraddleEngine:
         self.early_exits = 0
         self.leg_stops_today = 0
         self.vetoes = 0
+        self.deferred_exits = 0
         self.realized_day = 0.0
         self.closed: list[dict[str, Any]] = []
         self._intents: dict[str, Intent] = {}
@@ -551,6 +553,23 @@ class StraddleEngine:
     def expiry_selection(self) -> str:
         return selection_of(self.settings)
 
+    @property
+    def min_hold_minutes(self) -> float:
+        """A readout EXIT is ignored until the straddle is this old; stops, targets, lock and square-off are not."""
+        return float(self.strategy.get("min_hold_minutes", 10) or 0.0)
+
+    def position_age_minutes(self, now: datetime) -> float | None:
+        pos = self.position
+        if pos is None or pos.entered_at is None:
+            return None
+        return (now - pos.entered_at).total_seconds() / 60.0
+
+    def hold_until(self) -> datetime | None:
+        pos = self.position
+        if pos is None or pos.entered_at is None:
+            return None
+        return pos.entered_at + timedelta(minutes=self.min_hold_minutes)
+
     def _sizing_stop_pct(self, basis: StopBasis) -> float:
         if self.combined_stop_enabled and basis.combined_stop_pct > 0:
             return basis.combined_stop_pct
@@ -609,6 +628,7 @@ class StraddleEngine:
         self.entries_today = entries_today
         self.realized_day = realized_day
         self.stop_hits = self.target_hits = self.time_exits = self.early_exits = self.leg_stops_today = self.vetoes = 0
+        self.deferred_exits = 0
         self.closed = []
         self.last_exit_at = None
         self.last_closed = None
@@ -698,15 +718,19 @@ class StraddleEngine:
         elif self.state == State.IN_POSITION:
             handled = self._check_levels(step, now)
             if not handled and prediction is not None and prediction.decision == Decision.EXIT:
-                merged = self._merge_ctx(ctx, now, quote, prediction, observation, self.position.lots if self.position else 0)
-                result = self.guard.check_exit(merged)
-                step.guard = result
-                if result.allowed:
-                    self._emit_exit(step, Action.EXIT, f"readout EXIT, expects {prediction.realized_over_implied:.2f} of implied")
+                age = self.position_age_minutes(now)
+                if age is not None and age < self.min_hold_minutes:
+                    self._defer_exit(step, age)
                 else:
-                    step.action = Action.VETO.value
-                    step.detail = "exit vetoed"
-                    self.vetoes += 1
+                    merged = self._merge_ctx(ctx, now, quote, prediction, observation, self.position.lots if self.position else 0)
+                    result = self.guard.check_exit(merged)
+                    step.guard = result
+                    if result.allowed:
+                        self._emit_exit(step, Action.EXIT, f"readout EXIT, expects {prediction.realized_over_implied:.2f} of implied")
+                    else:
+                        step.action = Action.VETO.value
+                        step.detail = "exit vetoed"
+                        self.vetoes += 1
             elif not handled and step.action == Action.NONE.value:
                 step.action = Action.HOLD.value
         else:  # FLAT
@@ -1036,6 +1060,21 @@ class StraddleEngine:
         step.action = Action.REENTRY.value if self.closed else Action.ENTER.value
         step.intents.append(intent)
 
+    def _defer_exit(self, step: EngineStep, age: float) -> None:
+        """A readout EXIT inside the minimum hold: record a HOLD, the mechanical exits stay armed."""
+        pos = self.position
+        assert pos is not None
+        until = self.hold_until()
+        step.action = Action.HOLD.value
+        step.deferred_exit = {
+            "age_minutes": round(age, 2),
+            "min_hold_minutes": self.min_hold_minutes,
+            "entered_at": _iso(pos.entered_at),
+            "hold_until": _iso(until),
+        }
+        step.detail = f"readout EXIT deferred: the straddle is {int(age)} minutes old, minimum hold {self.min_hold_minutes:g} minutes"
+        self.deferred_exits += 1
+
     def _emit_exit(self, step: EngineStep, action: Action, reason: str, legs: list[LegState] | None = None, keep_action: bool = False) -> None:
         pos = self.position
         if pos is None:
@@ -1275,6 +1314,7 @@ class StraddleEngine:
             "early_exits": self.early_exits,
             "leg_stops": self.leg_stops_today,
             "vetoes": self.vetoes,
+            "deferred_exits": self.deferred_exits,
             "realized_day": round(self.realized_day, 2),
             "day_pnl": self.day_pnl(),
             "last_exit_at": _iso(self.last_exit_at),
@@ -1393,6 +1433,7 @@ class StraddleEngine:
                 "last_entry": _iso(self.window.last_entry) if self.window else None,
                 "reentry_cooldown_minutes": self.strategy.get("reentry_cooldown_minutes", 5),
                 "max_entries_per_day": self.strategy.get("max_entries_per_day", 10),
+                "min_hold_minutes": self.min_hold_minutes,
             },
             "counters": {
                 "entries_today": self.entries_today,
@@ -1403,6 +1444,7 @@ class StraddleEngine:
                 "early_exits": self.early_exits,
                 "leg_stops": self.leg_stops_today,
                 "vetoes": self.vetoes,
+                "deferred_exits": self.deferred_exits,
                 "last_exit_at": _iso(self.last_exit_at),
             },
             "intents": [intent_summary(i) for i in step.intents],
@@ -1438,7 +1480,13 @@ class StraddleEngine:
                 "gross": round(pos.gross, 2),
                 "costs": round(pos.costs, 2),
                 "stop_basis": pos.basis.to_dict() if pos.basis is not None else None,
+                "entered_at": _iso(pos.entered_at),
+                "age_minutes": round(self.position_age_minutes(step.at), 2) if pos.entered_at else None,
+                "hold_until": _iso(self.hold_until()),
+                "min_hold_minutes": self.min_hold_minutes,
             }
+            if step.deferred_exit is not None:
+                tech["deferred_exit"] = dict(step.deferred_exit)
             tech["costs"] = {
                 "trade_costs": round(pos.costs, 2),
                 "estimated_round_trip": round_trip_inr(self.cost_model, pos.entry_credit or pos.quoted_credit, pos.lots, self.lot_size),
@@ -1586,7 +1634,14 @@ class StraddleEngine:
                 parts.append(step.guard.summary())
             parts.append("Staying in the position." if self.in_position else "Still flat.")
         elif action == Action.HOLD.value:
-            if self.in_position and pos is not None:
+            if step.deferred_exit is not None and pos is not None:
+                age = int(step.deferred_exit["age_minutes"])
+                parts.append(
+                    f"The readout wants out but the straddle is only {age} minute{'s' if age != 1 else ''} old; "
+                    f"holding until {hhmm(self.hold_until())} (minimum hold {self.min_hold_minutes:g} minutes)."
+                )
+                parts.append(self._holding_sentence(pos))
+            elif self.in_position and pos is not None:
                 parts.append(self._holding_sentence(pos))
             elif step.prediction is None:
                 parts.append("No prediction. Flat.")

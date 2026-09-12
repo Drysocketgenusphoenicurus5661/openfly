@@ -139,7 +139,7 @@ Orders and positions mirror the OpenAlgo orderbook and positionbook filtered to 
               "leg_stop_min_pct": 15, "leg_stop_max_pct": 80, "combined_stop_min_pct": 10, "combined_stop_max_pct": 50,
               "leg_stop_pct": 30, "leg_stop_mode": "broker", "on_leg_stop": "hold_other",
               "combined_stop_enabled": true, "stop_pct": 25, "target_pct": 40, "lock_after_pct": 15, "trade_start": "09:20", "last_entry": "14:30", "square_off": "15:15",
-              "max_entries_per_day": 10, "reentry_cooldown_minutes": 5, "vix_ceiling": 20, "min_days_to_expiry": 0},
+              "max_entries_per_day": 10, "min_hold_minutes": 10, "reentry_cooldown_minutes": 5, "vix_ceiling": 20, "min_days_to_expiry": 0},
  "risk": {"daily_loss_limit_pct": 1.0, "risk_budget_pct": 1.0, "max_lots": 3, "spread_pct_max": 0.5, "quote_max_age_s": 5,
           "index_move_veto_pct": 0.3},
  "neural": {"neural_ms": 100, "live_interval": "5m", "replay_interval": "1m", "encoder": "B", "readout": "reservoir", "plastic": false},

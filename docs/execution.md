@@ -149,6 +149,15 @@ Rules implemented:
   straddle at 23350". Expiry day is allowed when min_days_to_expiry is 0.
 - An exit whose orders are rejected is retried on the next tick; three
   failures halt the engine.
+- Minimum hold. A readout EXIT is ignored until the straddle has been open
+  for `strategy.min_hold_minutes` (default 10): the step is recorded as HOLD
+  with `technical.deferred_exit` (age, hold_until) and the narrative "The
+  readout wants out but the straddle is only 3 minutes old; holding until
+  10:30 (minimum hold 10 minutes)."; once the hold has passed an EXIT is
+  taken on the next observation that still says EXIT. Stops, targets, the
+  lock, leg stops and the square-off are unaffected and act at once. The
+  engine status counts `deferred_exits`. This answers the first real replay
+  (ten straddles closed by the readout within minutes, costs above gross).
 - Strike guarantee. The strike of a new entry is computed from the latest
   StraddleQuote at that minute (the worker re-resolves the chain snapshot at
   every observation while flat; run_day asks the pricer for the ATM when

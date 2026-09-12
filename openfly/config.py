@@ -134,6 +134,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "square_off": "15:15",
         "square_off_lead_seconds": 30,
         "max_entries_per_day": 10,
+        "min_hold_minutes": 10,
         "reentry_cooldown_minutes": 5,
         "vix_ceiling": 20.0,
         "min_days_to_expiry": 0,
